@@ -1,0 +1,25 @@
+Package: stddiff.spark
+Title: Calculate the Standardized Difference for Numeric, Binary and
+        Category Variables in Apache Spark
+Version: 1.0
+Authors@R: person("Alicja", "Januszkiewicz", , "cran.alicja.januszkiewicz@gmail.com", role = c("aut", "cre"))
+Description: Provides functions to compute standardized differences for numeric, binary,
+    and categorical variables on Apache Spark DataFrames using 'sparklyr'.
+    The implementation mirrors the methods used in the 'stddiff' package but
+    operates on distributed data.
+License: GPL (>= 3)
+Encoding: UTF-8
+Roxygen: list(markdown = TRUE)
+RoxygenNote: 7.3.3
+Depends:
+    R (>= 4.1.0)
+Imports:
+    dplyr (>= 1.1.0),
+    tidyr (>= 1.3.0),
+    sparklyr (>= 1.8.0)
+Suggests:
+    stddiff (>= 2.1.0),
+    testthat (>= 3.0.0),
+    withr
+Config/testthat/edition: 3
+SystemRequirements: Apache Spark (tested with 3.4.4)
