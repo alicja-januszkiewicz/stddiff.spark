@@ -1,8 +1,7 @@
-# stddiff.R - Spark implementations of standardized difference calculations
+# stddiff_spark.R - Spark implementations of standardized difference functions
 #
-# These functions provide Spark-compatible implementations of standardized
-# difference calculations from the stddiff package. They are functionally
-# equivalent to the base R versions but operate on Spark DataFrames.
+# These functions replicate the stddiff package interface for Spark DataFrames.
+# They perform the same calculations but on distributed data using sparklyr.
 
 # Helper Functions --------------------------------------------------------
 
