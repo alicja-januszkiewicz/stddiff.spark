@@ -7,12 +7,12 @@
 stddiff.binary(data, gcol, vcol, verbose = FALSE)
 }
 \arguments{
-\item{data}{A Spark DataFrame (\code{tbl_spark}) containing the variables}
+\item{data}{A Spark DataFrame (\code{tbl_spark}) containing the variables.}
 
-\item{gcol}{Unquoted column name for the binary grouping variable
-(e.g., treatment vs control)}
+\item{gcol}{Integer; column index of the binary grouping variable
+(e.g., treatment vs control).}
 
-\item{vcol}{Character vector of binary variable column names to analyze}
+\item{vcol}{Integer vector; column indices of the binary variables to analyze.}
 
 \item{verbose}{Logical; if TRUE, prints progress messages. Default is FALSE.}
 }
@@ -30,35 +30,30 @@ A numeric matrix with one row per variable and columns:
 }
 \description{
 Calculates standardized differences for binary variables using a Spark
-DataFrame. This function is equivalent to \code{stddiff::stddiff.binary}
-but operates on Spark data.
+DataFrame. Equivalent to \code{stddiff::stddiff.binary} but operates on Spark data.
 }
 \details{
 Variables are encoded using lexicographic ordering since Spark does not
 have factor types. The first level alphabetically becomes 0, the second
-becomes 1. For example, "No" < "Yes", "control" < "treatment".
+becomes 1.
 
 The standardized difference is computed as:
 \deqn{d = \frac{|p_t - p_c|}{\sqrt{(p_t(1-p_t) + p_c(1-p_c))/2}}}
 }
 \examples{
-\dontrun{
-library(sparklyr)
-sc <- spark_connect(master = "local")
+\dontshow{if (requireNamespace("sparklyr", quietly = TRUE) && interactive()) withAutoprint(\{ # examplesIf}
+sc <- sparklyr::spark_connect(master = "local")
 
-# Copy data to Spark
-spark_df <- copy_to(sc, my_data)
+spark_df <- sparklyr::copy_to(sc, mtcars)
 
-# Calculate standardized differences
 result <- stddiff.binary(
   data = spark_df,
-  gcol = treatment,
-  vcol = c("var1", "var2", "var3")
+  gcol = 9,   # column index of grouping variable
+  vcol = c(8) # columns of binary variables
 )
 
-spark_disconnect(sc)
-}
-
+sparklyr::spark_disconnect(sc)
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link{stddiff.category}}, \code{\link{stddiff.numeric}}

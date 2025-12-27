@@ -7,11 +7,11 @@
 stddiff.numeric(data, gcol, vcol, verbose = FALSE)
 }
 \arguments{
-\item{data}{A Spark DataFrame (\code{tbl_spark}) containing the variables}
+\item{data}{A Spark DataFrame (\code{tbl_spark}) containing the variables.}
 
-\item{gcol}{Unquoted column name for the binary grouping variable}
+\item{gcol}{Integer; column index of the binary grouping variable.}
 
-\item{vcol}{Character vector of numeric variable column names to analyze}
+\item{vcol}{Integer vector; column indices of the numeric variables to analyze.}
 
 \item{verbose}{Logical; if TRUE, prints progress messages. Default is FALSE.}
 }
@@ -30,33 +30,30 @@ A numeric matrix with one row per variable and columns:
 }
 }
 \description{
-Calculates standardized differences for continuous numeric variables using
-a Spark DataFrame. This function is equivalent to
-\code{stddiff::stddiff.numeric} but operates on Spark data.
+Calculates standardized differences for continuous numeric variables using a
+Spark DataFrame. Equivalent to \code{stddiff::stddiff.numeric} but operates on Spark data.
 }
 \details{
 The standardized difference for continuous variables is computed as:
 \deqn{d = \frac{|\bar{x}_t - \bar{x}_c|}{\sqrt{(s_t^2 + s_c^2)/2}}}
 where \eqn{\bar{x}} represents means and \eqn{s^2} represents variances.
 
-This is also known as Cohen's d with pooled standard deviation.
+This is equivalent to Cohen's d with pooled standard deviation.
 }
 \examples{
-\dontrun{
-library(sparklyr)
-sc <- spark_connect(master = "local")
+\dontshow{if (requireNamespace("sparklyr", quietly = TRUE) && interactive()) withAutoprint(\{ # examplesIf}
+sc <- sparklyr::spark_connect(master = "local")
 
-spark_df <- copy_to(sc, my_data)
+spark_df <- sparklyr::copy_to(sc, mtcars)
 
 result <- stddiff.numeric(
   data = spark_df,
-  gcol = treatment,
-  vcol = c("age", "weight", "bmi")
+  gcol = 8,          # column index of grouping variable
+  vcol = c(1, 2, 5)  # columns of numeric variables
 )
 
-spark_disconnect(sc)
-}
-
+sparklyr::spark_disconnect(sc)
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link{stddiff.binary}}, \code{\link{stddiff.category}}

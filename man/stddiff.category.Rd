@@ -7,11 +7,11 @@
 stddiff.category(data, gcol, vcol, verbose = FALSE)
 }
 \arguments{
-\item{data}{A Spark DataFrame (\code{tbl_spark}) containing the variables}
+\item{data}{A Spark DataFrame (\code{tbl_spark}) containing the variables.}
 
-\item{gcol}{Unquoted column name for the binary grouping variable}
+\item{gcol}{Integer; column index of the binary grouping variable.}
 
-\item{vcol}{Character vector of categorical variable column names to analyze}
+\item{vcol}{Integer vector; column indices of the categorical variables to analyze.}
 
 \item{verbose}{Logical; if TRUE, prints progress messages. Default is FALSE.}
 }
@@ -30,34 +30,29 @@ A numeric matrix with one row per category level and columns:
 Row names are formatted as "variable_name level_name".
 }
 \description{
-Calculates standardized differences for categorical variables
-using a Spark DataFrame. This function is equivalent to
-\code{stddiff::stddiff.category} but operates on Spark data.
+Calculates standardized differences for categorical variables using a Spark
+DataFrame. Equivalent to \code{stddiff::stddiff.category} but operates on Spark data.
 }
 \details{
 For categorical variables with K levels, the standardized difference is
 computed using a multivariate approach that accounts for all K-1 levels
-simultaneously (excluding the reference level).
-
-Category levels are sorted lexicographically. The first level alphabetically
-serves as the reference category.
+simultaneously (excluding the reference level). Category levels are sorted
+lexicographically; the first level alphabetically serves as the reference.
 }
 \examples{
-\dontrun{
-library(sparklyr)
-sc <- spark_connect(master = "local")
+\dontshow{if (requireNamespace("sparklyr", quietly = TRUE) && interactive()) withAutoprint(\{ # examplesIf}
+sc <- sparklyr::spark_connect(master = "local")
 
-spark_df <- copy_to(sc, my_data)
+spark_df <- sparklyr::copy_to(sc, as.data.frame(Titanic))
 
 result <- stddiff.category(
   data = spark_df,
-  gcol = treatment,
-  vcol = c("race", "education", "region")
+  gcol = 4,   # column index of grouping variable
+  vcol = c(1) # columns of categorical variables
 )
 
-spark_disconnect(sc)
-}
-
+sparklyr::spark_disconnect(sc)
+\dontshow{\}) # examplesIf}
 }
 \seealso{
 \code{\link{stddiff.binary}}, \code{\link{stddiff.numeric}}

@@ -583,13 +583,12 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
 #' Compute Standardized Differences for Binary Variables (Spark)
 #'
 #' Calculates standardized differences for binary variables using a Spark
-#' DataFrame. This function is equivalent to \code{stddiff::stddiff.binary}
-#' but operates on Spark data.
+#' DataFrame. Equivalent to \code{stddiff::stddiff.binary} but operates on Spark data.
 #'
-#' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables
-#' @param gcol Unquoted column name for the binary grouping variable
-#'   (e.g., treatment vs control)
-#' @param vcol Character vector of binary variable column names to analyze
+#' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables.
+#' @param gcol Integer; column index of the binary grouping variable
+#'   (e.g., treatment vs control).
+#' @param vcol Integer vector; column indices of the binary variables to analyze.
 #' @param verbose Logical; if TRUE, prints progress messages. Default is FALSE.
 #'
 #' @return A numeric matrix with one row per variable and columns:
@@ -604,28 +603,23 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
 #' @details
 #' Variables are encoded using lexicographic ordering since Spark does not
 #' have factor types. The first level alphabetically becomes 0, the second
-#' becomes 1. For example, "No" < "Yes", "control" < "treatment".
+#' becomes 1.
 #'
 #' The standardized difference is computed as:
 #' \deqn{d = \frac{|p_t - p_c|}{\sqrt{(p_t(1-p_t) + p_c(1-p_c))/2}}}
 #'
-#' @examples
-#' \dontrun{
-#' library(sparklyr)
-#' sc <- spark_connect(master = "local")
+#' @examplesIf requireNamespace("sparklyr", quietly = TRUE) && interactive()
+#' sc <- sparklyr::spark_connect(master = "local")
 #'
-#' # Copy data to Spark
-#' spark_df <- copy_to(sc, my_data)
+#' spark_df <- sparklyr::copy_to(sc, mtcars)
 #'
-#' # Calculate standardized differences
 #' result <- stddiff.binary(
 #'   data = spark_df,
-#'   gcol = treatment,
-#'   vcol = c("var1", "var2", "var3")
+#'   gcol = 9,   # column index of grouping variable
+#'   vcol = c(8) # columns of binary variables
 #' )
 #'
-#' spark_disconnect(sc)
-#' }
+#' sparklyr::spark_disconnect(sc)
 #'
 #' @seealso \code{\link{stddiff.category}}, \code{\link{stddiff.numeric}}
 #' @export
@@ -649,13 +643,12 @@ stddiff.binary <- function(data, gcol, vcol, verbose = FALSE) {
 
 #' Compute Standardized Differences for Categorical Variables (Spark)
 #'
-#' Calculates standardized differences for categorical variables
-#' using a Spark DataFrame. This function is equivalent to
-#' \code{stddiff::stddiff.category} but operates on Spark data.
+#' Calculates standardized differences for categorical variables using a Spark
+#' DataFrame. Equivalent to \code{stddiff::stddiff.category} but operates on Spark data.
 #'
-#' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables
-#' @param gcol Unquoted column name for the binary grouping variable
-#' @param vcol Character vector of categorical variable column names to analyze
+#' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables.
+#' @param gcol Integer; column index of the binary grouping variable.
+#' @param vcol Integer vector; column indices of the categorical variables to analyze.
 #' @param verbose Logical; if TRUE, prints progress messages. Default is FALSE.
 #'
 #' @return A numeric matrix with one row per category level and columns:
@@ -672,26 +665,21 @@ stddiff.binary <- function(data, gcol, vcol, verbose = FALSE) {
 #' @details
 #' For categorical variables with K levels, the standardized difference is
 #' computed using a multivariate approach that accounts for all K-1 levels
-#' simultaneously (excluding the reference level).
+#' simultaneously (excluding the reference level). Category levels are sorted
+#' lexicographically; the first level alphabetically serves as the reference.
 #'
-#' Category levels are sorted lexicographically. The first level alphabetically
-#' serves as the reference category.
+#' @examplesIf requireNamespace("sparklyr", quietly = TRUE) && interactive()
+#' sc <- sparklyr::spark_connect(master = "local")
 #'
-#' @examples
-#' \dontrun{
-#' library(sparklyr)
-#' sc <- spark_connect(master = "local")
-#'
-#' spark_df <- copy_to(sc, my_data)
+#' spark_df <- sparklyr::copy_to(sc, as.data.frame(Titanic))
 #'
 #' result <- stddiff.category(
 #'   data = spark_df,
-#'   gcol = treatment,
-#'   vcol = c("race", "education", "region")
+#'   gcol = 4,   # column index of grouping variable
+#'   vcol = c(1) # columns of categorical variables
 #' )
 #'
-#' spark_disconnect(sc)
-#' }
+#' sparklyr::spark_disconnect(sc)
 #'
 #' @seealso \code{\link{stddiff.binary}}, \code{\link{stddiff.numeric}}
 #' @export
@@ -715,13 +703,12 @@ stddiff.category <- function(data, gcol, vcol, verbose = FALSE) {
 
 #' Compute Standardized Differences for Numeric Variables (Spark)
 #'
-#' Calculates standardized differences for continuous numeric variables using
-#' a Spark DataFrame. This function is equivalent to
-#' \code{stddiff::stddiff.numeric} but operates on Spark data.
+#' Calculates standardized differences for continuous numeric variables using a
+#' Spark DataFrame. Equivalent to \code{stddiff::stddiff.numeric} but operates on Spark data.
 #'
-#' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables
-#' @param gcol Unquoted column name for the binary grouping variable
-#' @param vcol Character vector of numeric variable column names to analyze
+#' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables.
+#' @param gcol Integer; column index of the binary grouping variable.
+#' @param vcol Integer vector; column indices of the numeric variables to analyze.
 #' @param verbose Logical; if TRUE, prints progress messages. Default is FALSE.
 #'
 #' @return A numeric matrix with one row per variable and columns:
@@ -740,23 +727,20 @@ stddiff.category <- function(data, gcol, vcol, verbose = FALSE) {
 #' \deqn{d = \frac{|\bar{x}_t - \bar{x}_c|}{\sqrt{(s_t^2 + s_c^2)/2}}}
 #' where \eqn{\bar{x}} represents means and \eqn{s^2} represents variances.
 #'
-#' This is also known as Cohen's d with pooled standard deviation.
+#' This is equivalent to Cohen's d with pooled standard deviation.
 #'
-#' @examples
-#' \dontrun{
-#' library(sparklyr)
-#' sc <- spark_connect(master = "local")
+#' @examplesIf requireNamespace("sparklyr", quietly = TRUE) && interactive()
+#' sc <- sparklyr::spark_connect(master = "local")
 #'
-#' spark_df <- copy_to(sc, my_data)
+#' spark_df <- sparklyr::copy_to(sc, mtcars)
 #'
 #' result <- stddiff.numeric(
 #'   data = spark_df,
-#'   gcol = treatment,
-#'   vcol = c("age", "weight", "bmi")
+#'   gcol = 8,          # column index of grouping variable
+#'   vcol = c(1, 2, 5)  # columns of numeric variables
 #' )
 #'
-#' spark_disconnect(sc)
-#' }
+#' sparklyr::spark_disconnect(sc)
 #'
 #' @seealso \code{\link{stddiff.binary}}, \code{\link{stddiff.category}}
 #' @export
@@ -780,12 +764,28 @@ stddiff.numeric <- function(data, gcol, vcol, verbose = FALSE) {
 
 utils::globalVariables(c(
   # Column names created/used in dplyr pipelines
-  "var", "x", "x_mapped", "min_val", "max_val",
-  "p", "n", "miss",
-  "p.c", "p.t", "n.c", "n.t",
-  "missing.c", "missing.t",
-  "mean.c", "mean.t", "sd.c", "sd.t",
-  "stddiff", "stddiff.l", "stddiff.u",
+  "var",
+  "x",
+  "x_mapped",
+  "min_val",
+  "max_val",
+  "p",
+  "n",
+  "miss",
+  "p.c",
+  "p.t",
+  "n.c",
+  "n.t",
+  "missing.c",
+  "missing.t",
+  "mean.c",
+  "mean.t",
+  "sd.c",
+  "sd.t",
+  "stddiff",
+  "stddiff.l",
+  "stddiff.u",
   "se",
-  ".data", "sd"
+  ".data",
+  "sd"
 ))
