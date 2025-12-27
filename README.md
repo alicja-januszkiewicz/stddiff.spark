@@ -4,15 +4,14 @@
 
 Because Spark DataFrames do not have native factor types, categorical variables are encoded using alphabetic ordering: the first level alphabetically becomes 0, the second becomes 1, and so on. This ensures consistent, deterministic calculations for binary and multi-level categorical variables.
 
->[!Note] If you want to choose a specific reference category, you must update the values in your Spark DataFrame so that the desired reference level comes first alphabetically. For example:
-> 
+> [!Note]
+> If you want to choose a specific reference category, you must update the values in your Spark DataFrame so that the desired reference level comes first alphabetically. For example:
 > ```R
 > library(dplyr)
 > # Suppose original category: "Control", "Treatment"
 > spark_df <- spark_df %>%
 >   mutate(group = ifelse(group == "Treatment", "A_Treatment", group))
 > ```
-> 
 > Here, prefixing "Treatment" with "A_" ensures it comes first alphabetically, making it the reference level for standardized difference calculations.
 
 Functions automatically dispatch to the `stddiff` package when non-Spark data is supplied, so the same code works seamlessly on both local R data frames and Spark DataFrames.
