@@ -206,7 +206,7 @@ testthat::test_that("categorical works when gcol has numeric values 1/2", {
   vcol <- get_col_index(spark_df, "age_group")
 
   # Run stddiff.category
-  res <- stddiff.category(spark_df, gcol, vcol, verbose = TRUE)
+  res <- stddiff.category(spark_df, gcol, vcol)
 
   # Check results are numeric matrix with expected rownames
   testthat::expect_true(is.matrix(res))
@@ -274,6 +274,76 @@ testthat::test_that("stddiff.numeric matches reference for mixed types", {
 
   ref <- stddiff::stddiff.numeric(df, gcol, vcol)
   res <- stddiff.numeric(spark_df, gcol, vcol)
+
+  expect_matrices_equal(res, ref)
+})
+
+# -------------------------------------------------------------------------
+# Degenerate binary cases
+# -------------------------------------------------------------------------
+
+testthat::test_that("stddiff.binary single unique value", {
+  df <- data.frame(
+    group = factor(c("control", "control", "treatment", "treatment")),
+    x1 = c(0, 0, 0, 0),
+    x2 = c(1, 1, 1, 1),
+    x3 = c(NA, NA, NA, NA)
+  )
+
+  vcols <- c("x1", "x2", "x3")
+
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(vcols), as.integer))
+
+  gcol <- get_col_index(df, "group")
+  vcol <- get_col_index(df, vcols)
+
+  ref <- stddiff::stddiff.binary(df, gcol, vcol)
+  res <- stddiff.binary(spark_df, gcol, vcol)
+
+  expect_matrices_equal(res, ref)
+})
+
+testthat::test_that("stddiff.binary two unique values", {
+  df <- data.frame(
+    group = factor(c("control", "control", "treatment", "treatment")),
+    x1 = c(0, 1, 0, 1),
+    x2 = c(1, 0, 1, 0),
+    x3 = c(0, NA, 1, NA)
+  )
+
+  vcols <- c("x1", "x2", "x3")
+
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(vcols), as.integer))
+
+  gcol <- get_col_index(df, "group")
+  vcol <- get_col_index(df, vcols)
+
+  ref <- stddiff::stddiff.binary(df, gcol, vcol)
+  res <- stddiff.binary(spark_df, gcol, vcol)
+
+  expect_matrices_equal(res, ref)
+})
+
+testthat::test_that("stddiff.binary three unique values", {
+  df <- data.frame(
+    group = factor(c("control", "control", "treatment", "treatment")),
+    x1 = c(0, 1, 2, 1),
+    x2 = c(1, NA, 2, 0),
+    x3 = c(NA, NA, 0, 1)
+  )
+
+  vcols <- c("x1", "x2", "x3")
+
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(vcols), as.integer))
+
+  gcol <- get_col_index(df, "group")
+  vcol <- get_col_index(df, vcols)
+
+  ref <- suppressWarnings(stddiff::stddiff.binary(df, gcol, vcol))
+  res <- suppressWarnings(stddiff.binary(spark_df, gcol, vcol))
 
   expect_matrices_equal(res, ref)
 })
