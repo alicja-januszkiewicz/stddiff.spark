@@ -194,7 +194,7 @@ testthat::test_that("categorical works when gcol has numeric values 1/2", {
   # Make a simple categorical dataset
   df <- data.frame(
     age_group = factor(c("16-19", "20-24", "25-29", "16-19", "20-24", "25-29")),
-    group = c(1, 1, 1, 2, 2, 2)  # numeric group
+    group = c(1, 1, 1, 2, 2, 2) # numeric group
   )
 
   # Copy to Spark
@@ -210,9 +210,70 @@ testthat::test_that("categorical works when gcol has numeric values 1/2", {
 
   # Check results are numeric matrix with expected rownames
   testthat::expect_true(is.matrix(res))
-  testthat::expect_equal(rownames(res), paste("age_group", levels(df$age_group)))
+  testthat::expect_equal(
+    rownames(res),
+    paste("age_group", levels(df$age_group))
+  )
 
   # Check that stddiff column exists and is numeric
   testthat::expect_true("stddiff" %in% colnames(res))
   testthat::expect_true(is.numeric(res[, "stddiff"]))
+})
+
+testthat::test_that("stddiff.binary matches reference for mixed types", {
+  df <- .local_data |>
+    dplyr::mutate(
+      logical_bin = vs %% 2 == 0,
+      int_bin     = cyl %% 2,
+      double_bin  = as.double(am),
+      char_bin    = ifelse(gear > 3, "high", "low")
+    )
+
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE)
+
+  gcol <- get_col_index(df, "group")
+  vcol <- get_col_index(df, c("logical_bin", "int_bin", "double_bin", "char_bin"))
+
+  ref <- stddiff::stddiff.binary(df, gcol, vcol)
+  res <- suppressWarnings(stddiff.binary(spark_df, gcol, vcol))
+
+  expect_matrices_equal(res, ref)
+})
+
+testthat::test_that("stddiff.category matches reference for mixed types", {
+  df <- .local_data |>
+    dplyr::mutate(
+      logical_cat = vs %% 2 == 0,
+      int_cat     = cyl,
+      double_cat  = as.double(cyl),
+      char_cat    = as.character(gear)
+    )
+
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE)
+
+  gcol <- get_col_index(df, "group")
+  vcol <- get_col_index(df, c("logical_cat", "int_cat", "double_cat", "char_cat"))
+
+  ref <- stddiff::stddiff.category(df, gcol, vcol)
+  res <- suppressWarnings(stddiff.category(spark_df, gcol, vcol))
+
+  expect_matrices_equal(res, ref)
+})
+
+testthat::test_that("stddiff.numeric matches reference for mixed types", {
+  df <- .local_data |>
+    dplyr::mutate(
+      int_num    = cyl,
+      double_num = as.double(hp)
+    )
+
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE)
+
+  gcol <- get_col_index(df, "group")
+  vcol <- get_col_index(df, c("int_num", "double_num"))
+
+  ref <- stddiff::stddiff.numeric(df, gcol, vcol)
+  res <- stddiff.numeric(spark_df, gcol, vcol)
+
+  expect_matrices_equal(res, ref)
 })

@@ -5,6 +5,25 @@
 
 # Helper Functions --------------------------------------------------------
 
+#' Map spark to base R types
+#' @keywords internal
+spark_to_r_type <- function(spark_type) {
+  switch(
+    spark_type,
+    "IntegerType" = "integer",
+    "LongType"    = "integer",
+    "DoubleType"  = "numeric",
+    "FloatType"   = "numeric",
+    "DecimalType" = "numeric",
+    "BooleanType" = "logical",
+    "StringType"  = "character",
+    "ByteType"    = "integer",
+    "ShortType"   = "integer",
+    "unknown"
+  )
+}
+
+
 #' Validate inputs for stddiff functions
 #' @keywords internal
 validate_stddiff_inputs <- function(data, gcol, vcol, type) {
@@ -104,6 +123,7 @@ validate_stddiff_inputs <- function(data, gcol, vcol, type) {
   # 7. Variable Type Validation Loop
   for (col in vcol) {
     col_type <- schema[[col]]$type
+    col_type <- sub("\\(.*\\)$", "", col_type)
 
     if (type == "numeric") {
       if (!col_type %in% numeric_types) {
@@ -131,14 +151,14 @@ validate_stddiff_inputs <- function(data, gcol, vcol, type) {
           call. = FALSE
         )
       } else {
-        stop(
+        warning(
           "Column '",
           col,
           "' is ",
           col_type,
-          " but must be a discrete type (String, Int, Boolean) for ",
+          " which is not a standard discrete type for ",
           type,
-          " calculations.",
+          " calculations. Proceeding with caution.",
           call. = FALSE
         )
       }
@@ -183,27 +203,27 @@ stddiff_binary_spark <- function(data, gcol, vcol, verbose = FALSE) {
   # Pivot to long format
   long <- data |>
     dplyr::select(dplyr::all_of(c(gcol, vcol))) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(vcol_names), as.character)) |>
     tidyr::pivot_longer(
       cols = dplyr::all_of(vcol_names),
       names_to = "var",
       values_to = "x"
     )
 
-  # Aggregate and collect
-  stats <- long |>
+  # Map to {0,1}
+  long_mapped <- long |>
     dplyr::group_by(var) |>
     dplyr::mutate(
-      # Get the "low" and "high" values per variable (lexicographic ordering)
-      min_val = min(x, na.rm = TRUE),
-      max_val = max(x, na.rm = TRUE)
-    ) |>
-    dplyr::mutate(
-      x_mapped = dplyr::case_when(
-        x == min_val ~ 0L,
-        x == max_val ~ 1L,
-        TRUE ~ NA_integer_
+      x_mapped = dplyr::if_else(
+        is.na(x) || isnan(x) || is.null(x),
+        NA,
+        dplyr::dense_rank(x) - 1L   # 0/1 mapping for non-NA only
       )
     ) |>
+    dplyr::ungroup()
+
+  # Aggregate and collect
+  stats <- long_mapped |>
     dplyr::group_by(var, .data[[gcol_name]]) |>
     dplyr::summarise(
       p = mean(x_mapped, na.rm = TRUE),
@@ -219,7 +239,6 @@ stddiff_binary_spark <- function(data, gcol, vcol, verbose = FALSE) {
 
   # Pivot to wide format and compute statistics
   stats_wide <- stats |>
-    dplyr::arrange(var, .data[[gcol_name]]) |>
     tidyr::pivot_wider(
       id_cols = var,
       names_from = dplyr::all_of(gcol_name),
@@ -295,9 +314,14 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
     message("Processing ", length(vcol_names), " categorical variable(s)...")
   }
 
+  schema <- sparklyr::sdf_schema(data)
+  original_types <- sapply(vcol_names, function(col) schema[[col]]$type)
+  original_r_types <- sapply(original_types, spark_to_r_type)
+
   # Pivot to long format
   long <- data |>
     dplyr::select(dplyr::all_of(c(gcol, vcol))) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(vcol_names), as.character)) |>
     tidyr::pivot_longer(
       cols = dplyr::all_of(vcol_names),
       names_to = "var",
@@ -408,7 +432,7 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
   miss_wide <- miss |>
     dplyr::arrange(var, .data[[gcol_name]]) |>
     tidyr::pivot_wider(
-      id_cols = var,
+      id_cols = c(var),
       names_from = dplyr::all_of(gcol_name),
       values_from = miss
     ) |>
@@ -422,6 +446,7 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
     dplyr::arrange(var, x, .data[[gcol_name]]) |>
     dplyr::select(var, x, dplyr::all_of(gcol_name), p) |>
     tidyr::pivot_wider(
+      id_cols = c("var", "x"),
       names_from = dplyr::all_of(gcol_name),
       values_from = p,
       values_fill = 0
@@ -459,6 +484,21 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
       stddiff.u
     )
 
+  # Convert vars to original types
+  for (i in seq_len(nrow(result))) {
+    var_name <- result$var[i]
+    r_type <- original_r_types[[var_name]]
+
+    result$x[i] <- switch(
+      r_type,
+      "integer"   = as.integer(result$x[i]),
+      "numeric"   = as.numeric(result$x[i]),
+      "logical"   = as.logical(result$x[i]),
+      "character" = as.character(result$x[i]),
+      result$x[i]  # fallback, just in case
+    )
+  }
+
   # Convert to matrix with combined rownames
   rst <- as.matrix(result[, -(1:2)])
   rownames(rst) <- paste(result$var, result$x)
@@ -486,6 +526,7 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
   # Pivot to long format
   long <- data |>
     dplyr::select(dplyr::all_of(c(gcol, vcol))) |>
+    dplyr::mutate(dplyr::across(dplyr::all_of(vcol_names), as.numeric)) |>
     tidyr::pivot_longer(
       cols = dplyr::all_of(vcol_names),
       names_to = "var",
