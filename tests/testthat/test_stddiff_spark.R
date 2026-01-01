@@ -189,3 +189,30 @@ testthat::test_that("handles zero variance", {
   res <- stddiff.numeric(spark_df, gcol, vcol)
   testthat::expect_true(is.nan(res[1, "stddiff"]) || res[1, "stddiff"] == 0)
 })
+
+testthat::test_that("categorical works when gcol has numeric values 1/2", {
+  # Make a simple categorical dataset
+  df <- data.frame(
+    age_group = factor(c("16-19", "20-24", "25-29", "16-19", "20-24", "25-29")),
+    group = c(1, 1, 1, 2, 2, 2)  # numeric group
+  )
+
+  # Copy to Spark
+  spark_df <- sparklyr::copy_to(.sc, df, overwrite = TRUE) |>
+    dplyr::mutate(group = as.integer(group)) # numeric group
+
+  # Use gcol as index
+  gcol <- get_col_index(spark_df, "group")
+  vcol <- get_col_index(spark_df, "age_group")
+
+  # Run stddiff.category
+  res <- stddiff.category(spark_df, gcol, vcol, verbose = TRUE)
+
+  # Check results are numeric matrix with expected rownames
+  testthat::expect_true(is.matrix(res))
+  testthat::expect_equal(rownames(res), paste("age_group", levels(df$age_group)))
+
+  # Check that stddiff column exists and is numeric
+  testthat::expect_true("stddiff" %in% colnames(res))
+  testthat::expect_true(is.numeric(res[, "stddiff"]))
+})

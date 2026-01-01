@@ -340,8 +340,8 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
       dplyr::arrange(x)
 
     # Extract proportions (exclude first level)
-    c_vals <- tab[[group_levels[1]]][-1]
-    t_vals <- tab[[group_levels[2]]][-1]
+    c_vals <- tab[[as.character(group_levels[1])]][-1]
+    t_vals <- tab[[as.character(group_levels[2])]][-1]
     k <- length(c_vals)
 
     # Check for sufficient levels
@@ -413,8 +413,8 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
       values_from = miss
     ) |>
     dplyr::rename(
-      missing.c = !!group_levels[1],
-      missing.t = !!group_levels[2]
+      missing.c = as.character(!!group_levels[1]),
+      missing.t = as.character(!!group_levels[2])
     )
 
   # Pivot proportions wide
@@ -427,8 +427,8 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
       values_fill = 0
     ) |>
     dplyr::rename(
-      p.c = !!group_levels[1],
-      p.t = !!group_levels[2]
+      p.c = as.character(!!group_levels[1]),
+      p.t = as.character(!!group_levels[2])
     )
 
   # Assemble final table
