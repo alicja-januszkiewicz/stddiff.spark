@@ -11,14 +11,14 @@ spark_to_r_type <- function(spark_type) {
   switch(
     spark_type,
     "IntegerType" = "integer",
-    "LongType"    = "integer",
-    "DoubleType"  = "numeric",
-    "FloatType"   = "numeric",
+    "LongType" = "integer",
+    "DoubleType" = "numeric",
+    "FloatType" = "numeric",
     "DecimalType" = "numeric",
     "BooleanType" = "logical",
-    "StringType"  = "character",
-    "ByteType"    = "integer",
-    "ShortType"   = "integer",
+    "StringType" = "character",
+    "ByteType" = "integer",
+    "ShortType" = "integer",
     "unknown"
   )
 }
@@ -217,7 +217,7 @@ stddiff_binary_spark <- function(data, gcol, vcol, verbose = FALSE) {
       x_mapped = dplyr::if_else(
         is.na(x) || isnan(x) || is.null(x),
         NA,
-        dplyr::dense_rank(x) - 1L   # 0/1 mapping for non-NA only
+        dplyr::dense_rank(x) - 1L # 0/1 mapping for non-NA only
       )
     ) |>
     dplyr::ungroup()
@@ -491,11 +491,11 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
 
     result$x[i] <- switch(
       r_type,
-      "integer"   = as.integer(result$x[i]),
-      "numeric"   = as.numeric(result$x[i]),
-      "logical"   = as.logical(result$x[i]),
+      "integer" = as.integer(result$x[i]),
+      "numeric" = as.numeric(result$x[i]),
+      "logical" = as.logical(result$x[i]),
       "character" = as.character(result$x[i]),
-      result$x[i]  # fallback, just in case
+      result$x[i] # fallback, just in case
     )
   }
 
@@ -802,8 +802,8 @@ stddiff.numeric <- function(data, gcol, vcol, verbose = FALSE) {
   }
 }
 
+# Column names created/used in dplyr pipelines
 utils::globalVariables(c(
-  # Column names created/used in dplyr pipelines
   "var",
   "x",
   "x_mapped",
@@ -829,3 +829,6 @@ utils::globalVariables(c(
   ".data",
   "sd"
 ))
+
+# Spark SQL functions
+utils::globalVariables("isnan")
