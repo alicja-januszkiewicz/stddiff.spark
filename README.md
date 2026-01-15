@@ -1,3 +1,7 @@
+[![CRAN status](https://www.r-pkg.org/badges/version/stddiff.spark)](
+https://CRAN.R-project.org/package=stddiff.spark
+)
+
 # Introduction
 
 `stddiff.spark` provides Spark-compatible implementations of the standardized difference calculations from the `stddiff` package. The interface is identical to `stddiff`, so you can swap your existing calls in-place without changing your workflow.  
