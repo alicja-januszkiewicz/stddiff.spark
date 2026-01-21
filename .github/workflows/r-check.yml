@@ -16,7 +16,11 @@ jobs:
     
     steps:
       - uses: actions/checkout@v3
-
+      
+      - name: Configure CRAN repository
+        run: |
+          echo 'options(repos = c(CRAN = "https://cloud.r-project.org"))' >> /usr/local/lib/R/etc/Rprofile.site
+      
       - name: Install system dependencies
         run: |
           apt-get update
