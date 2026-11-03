@@ -6,37 +6,129 @@ on:
   pull_request:
     branches: [ main ]
 
+permissions:
+  contents: read
+
 jobs:
   R-CMD-check:
     runs-on: ubuntu-latest
     container:
       image: rocker/verse:4.5.2
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The minimum sparklyr in DESCRIPTION, with a dbplyr it works with
+          # (sparklyr releases before 1.9.5 need dbplyr below 2.6.0)
+          - { sparklyr: "1.8.4", dbplyr: "2.4.0", spark: "3.4.4" }
+          # Current versions of everything, with the newest Spark that
+          # sparklyr lists; Spark 4 has ANSI mode on by default
+          - { sparklyr: "latest", dbplyr: "latest", spark: "4.2.0" }
+    name: R-CMD-check (sparklyr ${{ matrix.sparklyr }}, dbplyr ${{ matrix.dbplyr }}, Spark ${{ matrix.spark }})
     env:
-      CRAN: "https://cloud.r-project.org"
-    
+      SPARKLYR: ${{ matrix.sparklyr }}
+      DBPLYR: ${{ matrix.dbplyr }}
+      SPARK: ${{ matrix.spark }}
+      # Run the Spark tests, which call skip_on_cran()
+      NOT_CRAN: "true"
+      # Ubuntu 24.04's default JDK is 21; Spark 3.4 needs Java 8, 11 or 17,
+      # and Spark 4 needs 17 or 21
+      JAVA_HOME: /usr/lib/jvm/java-17-openjdk-amd64
+      # sparklyr::spark_connect() uses SPARK_HOME when it is set
+      SPARK_HOME: /opt/spark/spark-${{ matrix.spark }}-bin-hadoop3
+      # Skip only R CMD check's lookup of the current time from an outside
+      # service, which keeps failing ("unable to verify current time"). The
+      # check for future file timestamps still runs, against the runner's clock.
+      _R_CHECK_SYSTEM_CLOCK_: "false"
+
     steps:
-      - uses: actions/checkout@v3
-      
-      - name: Configure CRAN repository
+      - uses: actions/checkout@v7
+
+      # Binary packages for Ubuntu 24.04 come from Posit Package Manager, which
+      # is listed first so ties go to it. CRAN stays as the "CRAN" repository
+      # because R CMD check --as-cran reads metadata that only CRAN serves.
+      - name: Configure package repositories
         run: |
-          echo 'options(repos = c(CRAN = "https://cloud.r-project.org"))' >> /usr/local/lib/R/etc/Rprofile.site
-      
+          echo 'options(repos = c(P3M = "https://p3m.dev/cran/__linux__/noble/latest", CRAN = "https://cloud.r-project.org"))' >> /usr/local/lib/R/etc/Rprofile.site
+
+      # tidy and V8 (which needs libnode) let R CMD check validate the HTML
+      # manual; amsfonts is missing from rocker/verse's TinyTeX and the PDF
+      # manual needs it for the formulas
       - name: Install system dependencies
         run: |
           apt-get update
-          apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev default-jdk
+          apt-get install -y libcurl4-openssl-dev libssl-dev libxml2-dev \
+            openjdk-17-jdk tidy libnode-dev
+          # The image's TeX Live may be older than CTAN's, which tlmgr refuses
+          # to install from; fall back to that release's frozen archive
+          tlmgr install amsfonts || {
+            tl_year=$(tlmgr --version | sed -n 's/.*version \([0-9]\{4\}\).*/\1/p' | head -1)
+            tlmgr option repository "https://ftp.math.utah.edu/pub/tex/historic/systems/texlive/$tl_year/tlnet-final"
+            tlmgr install amsfonts
+          }
+          "$JAVA_HOME/bin/java" -version
 
       - name: Install R package dependencies
         run: |
-          Rscript -e 'install.packages("remotes")'
-          Rscript -e 'remotes::install_version("sparklyr", version = "1.8.0")'
-          Rscript -e 'remotes::install_deps(dependencies = TRUE, upgrade = "never")'
+          Rscript -e 'install.packages(c("remotes", "V8"))'
+          Rscript -e 'remotes::install_deps(dependencies = TRUE, upgrade = "always")'
+          # Older releases come from the CRAN archive
+          if [ "$DBPLYR" != "latest" ]; then
+            Rscript -e 'remotes::install_version("dbplyr", Sys.getenv("DBPLYR"), repos = "https://cloud.r-project.org", upgrade = "never")'
+          fi
+          if [ "$SPARKLYR" != "latest" ]; then
+            Rscript -e 'remotes::install_version("sparklyr", Sys.getenv("SPARKLYR"), repos = "https://cloud.r-project.org", upgrade = "never")'
+          fi
+          Rscript -e 'packageVersion("sparklyr"); packageVersion("dbplyr")'
+
+      - name: Check man pages match roxygen
+        if: matrix.sparklyr == 'latest'
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          Rscript -e 'roxygen2::roxygenise()'
+          git diff --exit-code -- man NAMESPACE
+
+      - name: Cache Spark
+        uses: actions/cache@v6
+        with:
+          path: /opt/spark
+          key: spark-${{ matrix.spark }}-hadoop3
+
+      # Downloaded directly rather than with sparklyr::spark_install(), which
+      # depends on a version list sparklyr fetches from GitHub
+      - name: Install Spark
+        run: |
+          if [ ! -d "$SPARK_HOME" ]; then
+            mkdir -p /opt/spark
+            curl -fsSL "https://archive.apache.org/dist/spark/spark-$SPARK/spark-$SPARK-bin-hadoop3.tgz" |
+              tar -xz -C /opt/spark
+          fi
+          "$SPARK_HOME/bin/spark-submit" --version
 
       - name: Build and Check package
         run: |
-          R CMD build . --no-manual
-          R CMD check *.tar.gz --no-manual --as-cran
+          R CMD build .
+          R CMD check *.tar.gz --as-cran
 
-      - name: Run tests
+      # R CMD check exits with success on WARNINGs, so fail on those and on
+      # ERRORs here. NOTEs stay visible in the log above but don't fail.
+      - name: Fail on check warnings or errors
         run: |
-          Rscript -e "library(testthat); test_dir('tests/testthat')"
+          log=stddiff.spark.Rcheck/00check.log
+          test -f "$log"
+          if grep -Eq '^Status: .*(WARNING|ERROR)' "$log"; then
+            grep -E '^\* .*(WARNING|ERROR)$|^Status:' "$log"
+            exit 1
+          fi
+
+      - name: Upload package tarball
+        if: matrix.sparklyr == 'latest'
+        uses: actions/upload-artifact@v7
+        with:
+          name: stddiff.spark-tarball
+          path: stddiff.spark_*.tar.gz
+
+      # R CMD check only prints the end of the test output, and only on failure
+      - name: Show test output
+        if: always()
+        run: cat stddiff.spark.Rcheck/tests/testthat.Rout* || true

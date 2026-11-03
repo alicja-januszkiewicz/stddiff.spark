@@ -1,0 +1,45 @@
+name: win-builder
+
+# Sends the package to win-builder (https://win-builder.r-project.org). The
+# results are emailed to the maintainer listed in DESCRIPTION, usually within
+# 30 minutes. Run it from the Actions tab before a CRAN submission.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: R version to check on win-builder
+        type: choice
+        options: [ R-devel, R-release, R-oldrelease ]
+        default: R-devel
+
+permissions:
+  contents: read
+
+jobs:
+  win-builder:
+    runs-on: ubuntu-latest
+    container:
+      image: rocker/r-ver:4.5.2
+    env:
+      WINBUILDER_VERSION: ${{ inputs.version || 'R-devel' }}
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build package
+        run: R CMD build .
+
+      - name: Upload to win-builder
+        run: |
+          command -v curl || { apt-get update && apt-get install -y curl; }
+          for pkg in stddiff.spark_*.tar.gz; do
+            curl -fsS -T "$pkg" "ftp://win-builder.r-project.org/$WINBUILDER_VERSION/"
+            echo "Uploaded $pkg to win-builder $WINBUILDER_VERSION"
+          done
+
+      # Keep the tarball that was sent, to compare with other builds
+      - name: Upload package tarball
+        uses: actions/upload-artifact@v7
+        with:
+          name: stddiff.spark-tarball-win-builder
+          path: stddiff.spark_*.tar.gz
