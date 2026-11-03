@@ -12,15 +12,17 @@ stddiff.binary(data, gcol, vcol, verbose = FALSE)
 \item{gcol}{Integer; column index of the binary grouping variable
 (e.g., treatment vs control).}
 
-\item{vcol}{Integer vector; column indices of the binary variables to analyze.}
+\item{vcol}{Integer vector; column indices of the binary variables to analyze.
+Repeated indices give repeated rows, and \code{gcol} may be included like
+any other column, as in \code{stddiff}.}
 
 \item{verbose}{Logical; if TRUE, prints progress messages. Default is FALSE.}
 }
 \value{
 A numeric matrix with one row per variable and columns:
 \itemize{
-\item \code{p.c}: Proportion in control group (first level alphabetically)
-\item \code{p.t}: Proportion in treatment group (second level alphabetically)
+\item \code{p.c}: Proportion in control group (first value of the group column)
+\item \code{p.t}: Proportion in treatment group (second value of the group column)
 \item \code{missing.c}: Number of missing values in control group
 \item \code{missing.t}: Number of missing values in treatment group
 \item \code{stddiff}: Standardized difference
@@ -33,9 +35,31 @@ Calculates standardized differences for binary variables using a Spark
 DataFrame. Equivalent to \code{stddiff::stddiff.binary} but operates on Spark data.
 }
 \details{
-Variables are encoded using lexicographic ordering since Spark does not
-have factor types. The first level alphabetically becomes 0, the second
-becomes 1.
+Spark DataFrames have no factor type, so values are ordered the way
+\code{as.factor()} orders them in \code{stddiff}: numerically for numeric
+columns, alphabetically for strings, and \code{FALSE} before \code{TRUE}.
+The first value of each variable becomes 0 and the second becomes 1, so
+\code{p.c} and \code{p.t} are proportions of the second value. The group
+column is ordered the same way, and its first value is the control group.
+
+Like \code{stddiff}, this does not check that variables are binary. A
+variable with more than two distinct values is coded 0, 1, 2, ... in that
+order, so its results are not meaningful: the proportions can exceed 1, and
+the standardized difference can be \code{NaN}, with R's "NaNs produced"
+warning. Each distinct value is collected, so don't pass continuous or
+ID-like columns.
+
+Differences from \code{stddiff} on Spark data: the group column must have
+exactly two values, or the function stops with an error. \code{stddiff}
+doesn't check this, and with more than two groups it silently compares the
+first two. \code{NaN} counts as missing, where \code{stddiff} keeps it as a
+value, because sparklyr's \code{copy_to()} turns some R \code{NA}s into
+\code{NaN}. With more than about 46,000 rows per group, the confidence
+limits are computed where \code{stddiff}'s integer counts overflow and give
+\code{NA}. Spark also has no factor type, so the data cannot carry a
+custom level order. Groups and values follow their sorted order, which is
+the default order in \code{stddiff}. Local data frames are passed to
+\code{stddiff}, which uses the level order of factor columns.
 
 The standardized difference is computed as:
 \deqn{d = \frac{|p_t - p_c|}{\sqrt{(p_t(1-p_t) + p_c(1-p_c))/2}}}
