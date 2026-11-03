@@ -1,24 +1,46 @@
 [![CRAN status](https://www.r-pkg.org/badges/version/stddiff.spark)](
 https://CRAN.R-project.org/package=stddiff.spark
 )
+[![R-CMD-check](https://github.com/alicja-januszkiewicz/stddiff.spark/actions/workflows/r-check.yml/badge.svg)](https://github.com/alicja-januszkiewicz/stddiff.spark/actions/workflows/r-check.yml)
 
 # Introduction
 
 `stddiff.spark` provides Spark-compatible implementations of the standardized difference calculations from the `stddiff` package. The interface is identical to `stddiff`, so you can swap your existing calls in-place without changing your workflow.  
 
-Because Spark DataFrames do not have native factor types, categorical variables are encoded using alphabetic ordering: the first level alphabetically becomes 0, the second becomes 1, and so on. This ensures consistent, deterministic calculations for binary and multi-level categorical variables.
+Functions automatically dispatch to the `stddiff` package when non-Spark data is supplied, so the same code works seamlessly on both local R data frames and Spark DataFrames.
+
+## Ordering of groups and levels
+
+Spark DataFrames have no factor type, so values are ordered the way `stddiff`'s default `as.factor()` conversion orders them: numbers in numeric order, strings alphabetically, dates and date-times in time order, and `FALSE` before `TRUE`.
+
+- **Group column (`gcol`)**: the first value is reported as the control group (the `.c` columns) and the second as the treatment group (the `.t` columns).
+- **Binary variables**: the first value is coded 0 and the second 1, so `p.c` and `p.t` are the proportions of the second value.
+- **Categorical variables**: levels are listed in this order, and the first level is the reference.
+
+The ordering only decides how results are labeled. The standardized differences and their confidence intervals are the same either way: the numeric and binary differences are absolute values, and the categorical difference is a Mahalanobis distance, which doesn't depend on which group comes first or which level is the reference.
 
 > [!Note]
-> If you want to choose a specific reference category, you must update the values in your Spark DataFrame so that the desired reference level comes first alphabetically. For example:
+> To report a different group as the control group, recode the group column so that group sorts first. For example, if the groups are "drug" and "placebo", "drug" sorts first and is reported as the control group. To make placebo the control group instead:
 > ```R
 > library(dplyr)
-> # Suppose original category: "Control", "Treatment"
 > spark_df <- spark_df %>%
->   mutate(group = ifelse(group == "Treatment", "A_Treatment", group))
+>   mutate(group = ifelse(group == "placebo", 0L, 1L))
 > ```
-> Here, prefixing "Treatment" with "A_" ensures it comes first alphabetically, making it the reference level for standardized difference calculations.
+> Placebo is now 0, which sorts before 1, so it is reported in the `.c` columns and the drug group in the `.t` columns.
 
-Functions automatically dispatch to the `stddiff` package when non-Spark data is supplied, so the same code works seamlessly on both local R data frames and Spark DataFrames.
+## Differences from stddiff
+
+On Spark data the results replicate `stddiff`, including its behaviour on unusual input, except:
+
+- **Errors for one variable**: where `stddiff` stops with an error because of one variable, such as a singular matrix in `stddiff.category()`, the Spark version returns `NA` for that variable with a warning, and the other variables still get results. Local data frames are passed to `stddiff`, so there the error remains.
+- **Exactly two groups**: the Spark version stops with an error unless the group column has exactly two values. `stddiff` doesn't check this: with more than two groups, `stddiff.binary()` and `stddiff.numeric()` silently compare the first two, and `stddiff.category()` stops with an unrelated error.
+- **NaN counts as missing**: in every function, including `stddiff.binary()` and `stddiff.category()`, where `stddiff` keeps `NaN` as a value. sparklyr's `copy_to()` turns some R `NA`s into `NaN`, such as those from arithmetic like `(bmi >= 30) * 1`, and `NaN` is never a real category.
+- **Large groups**: with more than about 46,000 rows per group, `stddiff`'s integer counts overflow and its confidence limits are `NA`, with the warning "NAs produced by integer overflow". The Spark version computes them. Local data frames are passed to `stddiff`, so they get `NA`.
+- **Unusual number formats**: `stddiff.numeric()` converts strings as `as.numeric()` does for decimals, `Inf` and `NaN`, but unusual formats that `as.numeric()` also reads, such as hexadecimal (`"0x1A"`), become `NA` with its coercion warning.
+- **Custom level order**: Spark has no factor type, so the data can't carry a custom level order. Groups and levels follow their sorted order, which matches `stddiff`'s default (`as.factor()`). On a local data frame, `stddiff` follows the level order of a factor column.
+
+> [!Note]
+> Like `stddiff`, `stddiff.binary()` doesn't check that variables are binary. With more than two distinct values the results aren't meaningful: the proportions can exceed 1, and the standardized difference can be `NaN`, with R's "NaNs produced" warning.
 
 
 # Installation
@@ -62,5 +84,5 @@ spark_disconnect(sc)
 ```
 
 # Requirements
-- Apache Spark (tested with 3.4.4)
-- sparklyr (>= 1.8.0). 
+- Apache Spark (tested with 3.4.4 and 4.2.0)
+- sparklyr (>= 1.8.4). sparklyr versions before 1.9.5 need dbplyr below 2.6.0.
