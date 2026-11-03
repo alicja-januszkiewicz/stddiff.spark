@@ -5,48 +5,13 @@
 
 # Helper Functions --------------------------------------------------------
 
-#' Map spark to base R types
-#' @keywords internal
-spark_to_r_type <- function(spark_type) {
-  switch(
-    spark_type,
-    "IntegerType" = "integer",
-    "LongType" = "integer",
-    "DoubleType" = "numeric",
-    "FloatType" = "numeric",
-    "DecimalType" = "numeric",
-    "BooleanType" = "logical",
-    "StringType" = "character",
-    "ByteType" = "integer",
-    "ShortType" = "integer",
-    "unknown"
-  )
-}
-
-
 #' Validate inputs for stddiff functions
 #' @keywords internal
-validate_stddiff_inputs <- function(data, gcol, vcol, type) {
-  # 1. Argument and Class Checks
-  if (!type %in% c("binary", "category", "numeric")) {
-    stop(
-      "Invalid type: '",
-      type,
-      "'. Must be 'binary', 'category', or 'numeric'.",
-      call. = FALSE
-    )
-  }
-
-  if (!inherits(data, "tbl_spark")) {
-    stop("data must be a Spark DataFrame (tbl_spark).", call. = FALSE)
-  }
-
-  # 2. Schema Retrieval
-  schema <- sparklyr::sdf_schema(data)
-  all_cols <- names(schema)
+validate_stddiff_inputs <- function(data, gcol, vcol) {
+  all_cols <- colnames(data)
   n_cols <- length(all_cols)
 
-  # 3. Check gcol
+  # 1. Check gcol
   if (length(gcol) != 1 || !is.numeric(gcol)) {
     stop("gcol must be a single numeric index", call. = FALSE)
   }
@@ -61,7 +26,7 @@ validate_stddiff_inputs <- function(data, gcol, vcol, type) {
     )
   }
 
-  # 4. Check vcol
+  # 2. Check vcol
   if (length(vcol) == 0) {
     stop("vcol must contain at least one column index", call. = FALSE)
   }
@@ -77,222 +42,355 @@ validate_stddiff_inputs <- function(data, gcol, vcol, type) {
     )
   }
 
-  # 5. Type Definitions
-  numeric_types <- c(
+  # 3. Column Types: those stddiff can process after collect(), whose
+  # as.factor() and as.numeric() take strings, numbers, logicals, dates and
+  # date-times. collect() also gives strings for calendar intervals and NULL
+  # columns. It gives lists or Java references, which stddiff can't process,
+  # for the others, such as arrays, binary, TIMESTAMP_NTZ and ANSI intervals.
+  accepted_types <- c(
+    "StringType",
     "DoubleType",
-    "IntegerType",
-    "LongType",
     "FloatType",
     "DecimalType",
-    "ShortType",
-    "ByteType"
-  )
-  categorical_types <- c(
-    "StringType",
     "IntegerType",
     "LongType",
-    "BooleanType",
+    "ShortType",
     "ByteType",
-    "ShortType"
+    "BooleanType",
+    "DateType",
+    "TimestampType",
+    "CalendarIntervalType",
+    "NullType"
   )
-
-  # 6. Group Column Safety Check
-  gcol_name <- all_cols[[gcol]]
-  gcol_type <- schema[[gcol_name]]$type
-  if (gcol_type %in% c("DoubleType", "FloatType")) {
-    warning(
-      "Group column '",
-      gcol_name,
-      "' is ",
-      gcol_type,
-      ". Ensure it contains exactly two discrete values (e.g., 0 and 1) 
-      to avoid precision errors.",
-      call. = FALSE
-    )
-  } else if (!gcol_type %in% categorical_types) {
-    stop(
-      "Group column '",
-      gcol_name,
-      "' is ",
-      gcol_type,
-      " but must be a discrete type (String, Integer, or Boolean).",
-      call. = FALSE
-    )
-  }
-
-  # 7. Variable Type Validation Loop
-  for (col in vcol) {
-    col_type <- schema[[col]]$type
-    col_type <- sub("\\(.*\\)$", "", col_type)
-
-    if (type == "numeric") {
-      if (!col_type %in% numeric_types) {
-        stop(
-          "Column '",
-          col,
-          "' is ",
-          col_type,
-          " but must be numeric for stddiff.numeric.",
-          call. = FALSE
-        )
-      }
-    } else {
-      # Logic for binary and category
-      if (col_type %in% categorical_types) {
-        next
-      } else if (col_type %in% c("DoubleType", "FloatType", "DecimalType")) {
-        warning(
-          "Column '",
-          col,
-          "' is ",
-          col_type,
-          ". Treating as discrete. ",
-          "Ensure it contains no fractional values.",
-          call. = FALSE
-        )
-      } else {
-        warning(
-          "Column '",
-          col,
-          "' is ",
-          col_type,
-          " which is not a standard discrete type for ",
-          type,
-          " calculations. Proceeding with caution.",
-          call. = FALSE
-        )
-      }
+  accepted <- "a string, number, logical, date or date-time"
+  cols <- unique(c(gcol, vcol))
+  types <- spark_types(data, all_cols[cols])
+  for (i in seq_along(cols)) {
+    if (!types[i] %in% accepted_types) {
+      stop(
+        if (cols[i] == gcol) "Group column '" else "Column '",
+        all_cols[[cols[i]]],
+        "' is ",
+        types[i],
+        " but must be ",
+        accepted,
+        ".",
+        call. = FALSE
+      )
     }
   }
 
   invisible(TRUE)
 }
 
-#' Check if group variable has exactly 2 levels
-#' @keywords internal
-check_binary_group <- function(group_levels, gcol_name) {
-  if (length(group_levels) != 2) {
+# Levels and codes of x as factor() gives them in stddiff (as.factor() calls
+# factor()): the unique values in order(), as strings. So numbers sort
+# numerically, strings as sort() orders them, and numbers equal to 15
+# significant digits share a level. Missing values get NA, and so does NaN,
+# which factor() would keep as a level: sparklyr's copy_to() turns some R NAs
+# into NaN, and NaN is never a real category.
+factor_codes <- function(x) {
+  if (is.double(x)) {
+    x[is.nan(x)] <- NA
+  }
+  y <- unique(x)
+  levels <- unique(as.character(y)[order(y)])
+  levels <- levels[!is.na(levels)]
+  list(levels = levels, codes = match(as.character(x), levels))
+}
+
+# Convert values of a column of `spark_type`, cast to strings in Spark, back
+# to the type collect() gives them in R, so they sort and print as they would
+# in stddiff: "4", not "4.0". Date-times arrive as microseconds (see
+# select_internal()).
+restore_type <- function(x, spark_type) {
+  switch(
+    spark_type,
+    IntegerType = ,
+    LongType = ,
+    ShortType = ,
+    ByteType = {
+      v <- as.numeric(x)
+      # LongType values can exceed R's integer range
+      if (all(is.na(v) | abs(v) <= .Machine$integer.max)) as.integer(v) else v
+    },
+    # Spark writes infinite doubles as "Infinity", which as.numeric() rejects
+    DoubleType = ,
+    FloatType = ,
+    DecimalType = as.numeric(sub("Infinity$", "Inf", x)),
+    BooleanType = as.logical(x),
+    DateType = as.Date(x),
+    TimestampType = datetime_from_micros(x),
+    x
+  )
+}
+
+# The control ("c", the first group level) and treatment ("t") arm of each
+# group value collected from select_internal(), with the group levels from
+# factor_codes(). Results are widened by these labels, so group values never
+# become column names. Rows with a missing group get NA. Stops unless the
+# group column has exactly two values.
+group_arms <- function(group, gcol_name, gcol_type) {
+  if (gcol_type == "TimestampType") {
+    group <- datetime_from_micros(group)
+  }
+  g <- factor_codes(group)
+  if (length(g$levels) != 2) {
     stop(
       "Group variable '",
       gcol_name,
       "' must have exactly 2 levels. Found ",
-      length(group_levels),
+      length(g$levels),
       ": ",
-      paste(group_levels, collapse = ", "),
+      paste(g$levels, collapse = ", "),
       call. = FALSE
     )
   }
-  invisible(TRUE)
+  factor(c("c", "t")[g$codes], levels = c("c", "t"))
+}
+
+# Spark types of the named columns, without parameters such as DecimalType's
+spark_types <- function(data, cols) {
+  schema <- sparklyr::sdf_schema(data)
+  vapply(
+    cols,
+    function(col) sub("\\(.*\\)$", "", schema[[col]]$type),
+    character(1),
+    USE.NAMES = FALSE
+  )
+}
+
+# Spark expressions for as.numeric() on string column `col` (a symbol), and
+# a 0/1 flag for the values it turns into NA with the warning "NAs introduced
+# by coercion". Only strings that R and Spark's cast both read as the same
+# number are cast: decimals with an optional exponent, and Inf, Infinity and
+# NaN in any case, with surrounding whitespace. Anything else is NA without
+# reaching the cast, which would error on it in ANSI mode: blank strings
+# without the warning, as in R, and the rest with it. That includes unusual
+# formats R reads, such as hexadecimal numbers. The patterns are Java regular
+# expressions, written without backslashes, which Spark SQL would unescape.
+string_as_numeric <- function(col) {
+  ws <- "[ \t\n\r\f\v]*"
+  number <- paste0(
+    "^", ws, "([+-]?([0-9]+[.]?[0-9]*|[.][0-9]+)([eE][+-]?[0-9]+)?",
+    "|[+-]?(?i:inf|infinity)|(?i:nan))", ws, "$"
+  )
+  is_number <- bquote(rlike(.(col), .(number)))
+  is_blank <- bquote(rlike(.(col), .(paste0("^", ws, "$"))))
+  list(
+    value = bquote(dplyr::if_else(.(is_number), as.numeric(.(col)), NA_real_)),
+    coerced = bquote(
+      dplyr::if_else(is.na(.(col)) | .(is_number) | .(is_blank), 0L, 1L)
+    )
+  )
+}
+
+# Select the group and variable columns under internal names: the group as
+# `group`, the variables as `v1`, `v2`, ... in order. Only these columns are
+# selected and every one is renamed, so no user column name reaches the code
+# below and none can clash with the columns it creates. A column can only be
+# selected once, so a variable that is the group column itself is added as a
+# copy of `group`. The callers map `v1`, ... back to the original names.
+select_internal <- function(data, gcol_name, vcol_names) {
+  vars <- paste0("v", seq_along(vcol_names))
+  is_group <- vcol_names == gcol_name
+  cols <- c(gcol_name, vcol_names[!is_group])
+  names(cols) <- c("group", vars[!is_group])
+
+  selected <- dplyr::select(data, dplyr::all_of(cols))
+  if (any(is_group)) {
+    selected <- dplyr::mutate(
+      selected,
+      dplyr::across(dplyr::all_of("group"), ~.x, .names = vars[is_group])
+    )
+  }
+
+  # Date-times become microseconds since 1970 (see datetime_from_micros()),
+  # and calendar intervals the strings collect() gives for them, "1 days"
+  types <- spark_types(data, c(gcol_name, vcol_names))
+  internal <- c("group", vars)
+  datetimes <- internal[types == "TimestampType"]
+  intervals <- internal[types == "CalendarIntervalType"]
+  if (length(datetimes) > 0) {
+    selected <- dplyr::mutate(
+      selected,
+      dplyr::across(dplyr::all_of(datetimes), ~ unix_micros(.x))
+    )
+  }
+  if (length(intervals) > 0) {
+    selected <- dplyr::mutate(
+      selected,
+      dplyr::across(dplyr::all_of(intervals), as.character)
+    )
+  }
+  selected
+}
+
+# Date-times from the microseconds select_internal() gives them as, built as
+# sparklyr's collect() builds them, in R's time zone. Spark's text form could
+# differ from R's in format and time zone, and collect() itself counts a
+# fraction of a second twice.
+datetime_from_micros <- function(x) {
+  as.POSIXct(as.numeric(x) / 1e6, origin = "1970-01-01")
+}
+
+# Stack the variable columns `vars` of a select_internal() table into long
+# format, with columns `group`, `var` (the internal name) and `value`
+pivot_long <- function(selected, vars, numeric = FALSE) {
+  selected <- if (numeric) {
+    # as.numeric() as in stddiff, which then treats NaN as missing: is.na()
+    # counts it and na.omit() drops it
+    selected |>
+      dplyr::mutate(dplyr::across(dplyr::all_of(vars), as.numeric)) |>
+      dplyr::mutate(dplyr::across(
+        dplyr::all_of(vars),
+        ~ dplyr::if_else(isnan(.x), NA_real_, .x)
+      ))
+  } else {
+    dplyr::mutate(selected, dplyr::across(dplyr::all_of(vars), as.character))
+  }
+
+  tidyr::pivot_longer(
+    selected,
+    cols = dplyr::all_of(vars),
+    names_to = "var",
+    values_to = "value"
+  )
+}
+
+# Count the rows of each value of each variable in each group, including
+# missing values and rows whose group is missing, and code the values as
+# stddiff's as.factor() does. One count per distinct value is collected, so a
+# high-cardinality column passed by mistake is slow or fails; that's
+# accepted, since its result would be meaningless anyway.
+# Returns, per variable, a data frame with columns freq, rank (the factor
+# code, NA for missing values) and arm, and its factor levels.
+code_values <- function(data, gcol_name, var_names, vars) {
+  types <- spark_types(data, var_names)
+  counts <- select_internal(data, gcol_name, var_names) |>
+    pivot_long(vars) |>
+    dplyr::count(var, group, value, name = "freq") |>
+    dplyr::collect()
+  counts$arm <- group_arms(
+    counts$group,
+    gcol_name,
+    spark_types(data, gcol_name)
+  )
+
+  # The factor levels come from the whole column, including rows whose
+  # group is missing, as in stddiff
+  tables <- lapply(seq_along(vars), function(i) {
+    df <- counts[counts$var == vars[i], ]
+    f <- factor_codes(restore_type(df$value, types[[i]]))
+    list(
+      tab = data.frame(freq = df$freq, rank = f$codes, arm = df$arm),
+      levels = f$levels
+    )
+  })
+  names(tables) <- vars
+  tables
+}
+
+# Missing values of one variable in each group, from a code_values() table
+missing_counts <- function(tab) {
+  c(
+    sum(tab$freq[is.na(tab$rank) & tab$arm %in% "c"]),
+    sum(tab$freq[is.na(tab$rank) & tab$arm %in% "t"])
+  )
+}
+
+# Mean, SD, count and missing count of one variable in the control and
+# treatment arms, from the summaries of each group value. Spark groups by
+# exact value, but values equal to 15 significant digits share an arm, as in
+# stddiff, so the summaries of an arm's values are combined.
+arm_summaries <- function(st) {
+  rows <- lapply(c("c", "t"), function(a) {
+    miss <- sum(st$miss[st$arm %in% a])
+    s <- st[st$arm %in% a & st$n > 0, ]
+    n <- sum(s$n)
+    if (nrow(s) <= 1) {
+      return(c(c(s$mean, NA)[1], c(s$sd, NA)[1], n, miss))
+    }
+    mean <- sum(s$n * s$mean) / n
+    # Spark gives no SD for a single value, which adds no spread
+    ss <- sum(
+      (s$n - 1) * ifelse(s$n > 1, s$sd^2, 0) + s$n * (s$mean - mean)^2
+    )
+    c(mean, if (n > 1) sqrt(ss / (n - 1)) else NA, n, miss)
+  })
+  rows <- do.call(rbind, rows)
+  data.frame(mean = rows[, 1], sd = rows[, 2], n = rows[, 3], miss = rows[, 4])
+}
+
+# Warn that a variable gets NA where stddiff would stop with an error
+warn_na <- function(var_name, e) {
+  warning(
+    "Could not compute the standardized difference for variable '",
+    var_name,
+    "' (",
+    conditionMessage(e),
+    "). Returning NA.",
+    call. = FALSE
+  )
 }
 
 
 # Main Functions ----------------------------------------------------------
 
+# Each function collects counts or summaries from Spark, then follows
+# stddiff's code for each entry of vcol, so its results, quirks and R's own
+# warnings (such as "NaNs produced") match stddiff's. Where stddiff would
+# stop with an error for a variable, that variable gets NA with a warning.
+
 #' @keywords internal
 stddiff_binary_spark <- function(data, gcol, vcol, verbose = FALSE) {
-  validate_stddiff_inputs(data, gcol, vcol, type = "binary")
+  validate_stddiff_inputs(data, gcol, vcol)
 
   all_cols <- colnames(data)
   gcol_name <- all_cols[gcol]
-  vcol_names <- all_cols[vcol]
+  uvcol <- unique(vcol)
+  vars <- paste0("v", seq_along(uvcol))
+  var_names <- all_cols[uvcol]
 
   if (verbose) {
     message("Processing ", length(vcol), " binary variable(s)...")
   }
 
-  # Pivot to long format
-  long <- data |>
-    dplyr::select(dplyr::all_of(c(gcol, vcol))) |>
-    dplyr::mutate(dplyr::across(dplyr::all_of(vcol_names), as.character)) |>
-    tidyr::pivot_longer(
-      cols = dplyr::all_of(vcol_names),
-      names_to = "var",
-      values_to = "x"
+  tables <- code_values(data, gcol_name, var_names, vars)
+
+  rst <- matrix(
+    NA_real_,
+    length(vcol),
+    7,
+    dimnames = list(
+      all_cols[vcol],
+      c("p.c", "p.t", "missing.c", "missing.t", "stddiff", "stddiff.l", "stddiff.u")
     )
-
-  # Map to {0,1}
-  long_mapped <- long |>
-    dplyr::group_by(var) |>
-    dplyr::mutate(
-      x_mapped = dplyr::if_else(
-        is.na(x) || isnan(x) || is.null(x),
-        NA,
-        dplyr::dense_rank(x) - 1L # 0/1 mapping for non-NA only
-      )
-    ) |>
-    dplyr::ungroup()
-
-  # Aggregate and collect
-  stats <- long_mapped |>
-    dplyr::group_by(var, .data[[gcol_name]]) |>
-    dplyr::summarise(
-      p = mean(x_mapped, na.rm = TRUE),
-      n = sum(dplyr::if_else(is.na(x_mapped), 0L, 1L), na.rm = TRUE),
-      miss = sum(dplyr::if_else(is.na(x_mapped), 1L, 0L), na.rm = TRUE),
-      .groups = "drop"
-    ) |>
-    dplyr::collect()
-
-  # Get group levels (sorted)
-  group_levels <- sort(unique(stats[[gcol_name]]))
-  check_binary_group(group_levels, gcol_name)
-
-  # Pivot to wide format and compute statistics
-  stats_wide <- stats |>
-    tidyr::pivot_wider(
-      id_cols = var,
-      names_from = dplyr::all_of(gcol_name),
-      values_from = c(p, n, miss)
-    )
-
-  tryCatch(
-    {
-      result <- stats_wide |>
-        dplyr::rename(
-          p.c = !!paste0("p_", group_levels[1]),
-          p.t = !!paste0("p_", group_levels[2]),
-          n.c = !!paste0("n_", group_levels[1]),
-          n.t = !!paste0("n_", group_levels[2]),
-          missing.c = !!paste0("miss_", group_levels[1]),
-          missing.t = !!paste0("miss_", group_levels[2])
-        ) |>
-        dplyr::mutate(
-          stddiff = abs(p.t - p.c) /
-            sqrt((p.t * (1 - p.t) + p.c * (1 - p.c)) / 2),
-          n = n.c + n.t,
-          se = sqrt(n / (n.c * n.t) + stddiff^2 / (2 * n)),
-          stddiff.l = stddiff - 1.96 * se,
-          stddiff.u = stddiff + 1.96 * se
-        ) |>
-        dplyr::select(
-          var,
-          p.c,
-          p.t,
-          missing.c,
-          missing.t,
-          stddiff,
-          stddiff.l,
-          stddiff.u
-        ) |>
-        dplyr::mutate(var = factor(var, levels = vcol_names)) |>
-        dplyr::arrange(var) |>
-        dplyr::mutate(var = as.character(var))
-    },
-    error = function(e) {
-      stop(
-        "Failed to process group levels '",
-        group_levels[1],
-        "' and '",
-        group_levels[2],
-        "'. Check that gcol contains exactly 2 levels.",
-        call. = FALSE
-      )
-    }
   )
+  for (i in seq_along(vcol)) {
+    tab <- tables[[vars[match(vcol[i], uvcol)]]]$tab
+    na <- missing_counts(tab)
 
-  # Convert to matrix with rownames
-  rst <- as.matrix(result[, -1])
-  rownames(rst) <- result$var
+    # The complete rows; p is the mean factor code minus 1 in each group
+    ok <- !is.na(tab$rank) & !is.na(tab$arm)
+    code <- tab$rank[ok]
+    freq <- tab$freq[ok]
+    arm <- tab$arm[ok]
+    p1 <- sum(code[arm == "t"] * freq[arm == "t"]) / sum(freq[arm == "t"]) - 1
+    p2 <- sum(code[arm == "c"] * freq[arm == "c"]) / sum(freq[arm == "c"]) - 1
+
+    stddiff <- abs(p1 - p2) / sqrt((p1 * (1 - p1) + p2 * (1 - p2)) / 2)
+    n <- c(sum(freq[arm == "c"]), sum(freq[arm == "t"]))
+    se <- sqrt(sum(n) / (n[1] * n[2]) + stddiff^2 / (2 * sum(n)))
+    rst[i, ] <- c(
+      p2,
+      p1,
+      na,
+      stddiff,
+      stddiff - 1.96 * se,
+      stddiff + 1.96 * se
+    )
+  }
   rst <- round(rst, 3)
 
   if (verbose) {
@@ -304,204 +402,112 @@ stddiff_binary_spark <- function(data, gcol, vcol, verbose = FALSE) {
 
 #' @keywords internal
 stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
-  validate_stddiff_inputs(data, gcol, vcol, type = "category")
+  validate_stddiff_inputs(data, gcol, vcol)
 
   all_cols <- colnames(data)
   gcol_name <- all_cols[gcol]
-  vcol_names <- all_cols[vcol]
+  uvcol <- unique(vcol)
+  vars <- paste0("v", seq_along(uvcol))
+  var_names <- all_cols[uvcol]
 
   if (verbose) {
-    message("Processing ", length(vcol_names), " categorical variable(s)...")
+    message("Processing ", length(vcol), " categorical variable(s)...")
   }
 
-  schema <- sparklyr::sdf_schema(data)
-  original_types <- sapply(vcol_names, function(col) schema[[col]]$type)
-  original_r_types <- sapply(original_types, spark_to_r_type)
+  tables <- code_values(data, gcol_name, var_names, vars)
 
-  # Pivot to long format
-  long <- data |>
-    dplyr::select(dplyr::all_of(c(gcol, vcol))) |>
-    dplyr::mutate(dplyr::across(dplyr::all_of(vcol_names), as.character)) |>
-    tidyr::pivot_longer(
-      cols = dplyr::all_of(vcol_names),
-      names_to = "var",
-      values_to = "x"
-    )
-
-  # Count missing values per variable and group
-  miss <- long |>
-    dplyr::group_by(var, .data[[gcol_name]]) |>
-    dplyr::summarise(
-      miss = sum(dplyr::if_else(is.na(x), 1L, 0L), na.rm = TRUE),
-      .groups = "drop"
-    ) |>
-    dplyr::collect()
-
-  # Compute proportions per category level (excluding NAs)
-  props <- long |>
-    dplyr::filter(!is.na(x)) |>
-    dplyr::count(var, x, .data[[gcol_name]]) |>
-    dplyr::group_by(var, .data[[gcol_name]]) |>
-    dplyr::mutate(p = n / sum(n, na.rm = TRUE)) |>
-    dplyr::ungroup() |>
-    dplyr::collect()
-
-  # Get group levels (sorted)
-  group_levels <- sort(unique(props[[gcol_name]]))
-  check_binary_group(group_levels, gcol_name)
-
-  # Compute stddiff per variable
-  stddiff_list <- lapply(split(props, props$var), function(df) {
-    # Pivot to wide format for contingency table
-    tab <- df |>
-      dplyr::select(x, dplyr::all_of(gcol_name), p) |>
-      dplyr::arrange(x, .data[[gcol_name]]) |>
-      tidyr::pivot_wider(
-        names_from = dplyr::all_of(gcol_name),
-        values_from = p,
-        values_fill = 0
-      ) |>
-      dplyr::arrange(x)
-
-    # Extract proportions (exclude first level)
-    c_vals <- tab[[as.character(group_levels[1])]][-1]
-    t_vals <- tab[[as.character(group_levels[2])]][-1]
-    k <- length(c_vals)
-
-    # Check for sufficient levels
-    if (k < 1) {
-      warning(
-        "Variable ",
-        unique(df$var),
-        " has < 2 levels after removing reference",
-        call. = FALSE
-      )
-      return(c(stddiff = NA_real_, stddiff.l = NA_real_, stddiff.u = NA_real_))
-    }
-
-    # Matrix inversion method from original
-    S <- matrix(0, k, k)
-    for (i in seq_len(k)) {
-      for (j in seq_len(k)) {
-        S[i, j] <- if (i == j) {
-          0.5 * (t_vals[i] * (1 - t_vals[i]) + c_vals[i] * (1 - c_vals[i]))
-        } else {
-          -0.5 * (t_vals[i] * t_vals[j] + c_vals[i] * c_vals[j])
-        }
-      }
-    }
-
-    # Try matrix inversion
-    tryCatch(
-      {
-        e <- diag(rep(1, k))
-        s <- solve(S, e)
-        d <- sqrt(t(t_vals - c_vals) %*% s %*% (t_vals - c_vals))
-
-        # Standard error and CI
-        n1 <- sum(df$n[df[[gcol_name]] == group_levels[1]], na.rm = TRUE)
-        n2 <- sum(df$n[df[[gcol_name]] == group_levels[2]], na.rm = TRUE)
-        n <- n1 + n2
-        se <- sqrt(n / (n1 * n2) + d^2 / (2 * n))
-
-        c(
-          stddiff = as.numeric(d),
-          stddiff.l = as.numeric(d - 1.96 * se),
-          stddiff.u = as.numeric(d + 1.96 * se)
-        )
-      },
-      error = function(e) {
-        warning(
-          "Matrix inversion failed for variable ",
-          unique(df$var),
-          ". Returning NA.",
-          call. = FALSE
-        )
-        c(stddiff = NA_real_, stddiff.l = NA_real_, stddiff.u = NA_real_)
-      }
-    )
-  })
-
-  stddiff_df <- data.frame(
-    var = names(stddiff_list),
-    do.call(rbind, stddiff_list),
-    row.names = NULL
+  out_cols <- c(
+    "p.c",
+    "p.t",
+    "missing.c",
+    "missing.t",
+    "stddiff",
+    "stddiff.l",
+    "stddiff.u"
   )
 
-  # Pivot missing counts wide
-  miss_wide <- miss |>
-    dplyr::arrange(var, .data[[gcol_name]]) |>
-    tidyr::pivot_wider(
-      id_cols = c(var),
-      names_from = dplyr::all_of(gcol_name),
-      values_from = miss
-    ) |>
-    dplyr::rename(
-      missing.c = as.character(!!group_levels[1]),
-      missing.t = as.character(!!group_levels[2])
+  blocks <- lapply(seq_along(vcol), function(i) {
+    u <- match(vcol[i], uvcol)
+    tab <- tables[[vars[u]]]$tab
+    var_levels <- tables[[vars[u]]]$levels
+    na <- missing_counts(tab)
+    nr <- length(var_levels)
+
+    # A variable with no non-missing values has no levels, so it gets one
+    # row named after it, with its missing counts, as in stddiff.numeric()
+    if (nr == 0) {
+      warn_na(var_names[[u]], simpleError("no non-missing values"))
+      block <- matrix(
+        NA_real_,
+        1,
+        length(out_cols),
+        dimnames = list(var_names[[u]], out_cols)
+      )
+      block[1, c("missing.c", "missing.t")] <- na
+      return(block)
+    }
+
+    # Contingency table of the complete rows: one row per level of the whole
+    # column, in factor order, and the control and treatment groups
+    ok <- !is.na(tab$rank) & !is.na(tab$arm)
+    tbl <- matrix(0, nr, 2)
+    for (j in which(ok)) {
+      a <- as.integer(tab$arm[j])
+      tbl[tab$rank[j], a] <- tbl[tab$rank[j], a] + tab$freq[j]
+    }
+    prop <- prop.table(tbl, 2)
+
+    # stddiff stops on a single level ("subscript out of bounds")
+    stat <- if (nr == 1) {
+      warn_na(var_names[[u]], simpleError("only one level"))
+      c(NA_real_, NA_real_, NA_real_)
+    } else tryCatch(
+      {
+        # As in stddiff, including its 1:k loops
+        t_vals <- prop[-1, 2]
+        c_vals <- prop[-1, 1]
+        k <- nr - 1
+        l <- k
+        s <- matrix(rep(0, k * l), ncol = l)
+        for (ii in 1:k) {
+          for (j in 1:l) {
+            if (ii == j) {
+              s[ii, j] <- 0.5 *
+                (t_vals[ii] * (1 - t_vals[ii]) + c_vals[ii] * (1 - c_vals[ii]))
+            }
+            if (ii != j) {
+              s[ii, j] <- -0.5 * (t_vals[ii] * t_vals[j] + c_vals[ii] * c_vals[j])
+            }
+          }
+        }
+        e <- diag(rep(1, k))
+        s <- solve(s, e)
+        tc <- t_vals - c_vals
+        stddiff <- as.numeric(sqrt(t(tc) %*% s %*% tc))
+        n <- colSums(tbl)
+        se <- sqrt(sum(n) / (n[1] * n[2]) + stddiff^2 / (2 * sum(n)))
+        c(stddiff, stddiff - 1.96 * se, stddiff + 1.96 * se)
+      },
+      error = function(e) {
+        warn_na(var_names[[u]], e)
+        c(NA_real_, NA_real_, NA_real_)
+      }
     )
 
-  # Pivot proportions wide
-  props_wide <- props |>
-    dplyr::arrange(var, x, .data[[gcol_name]]) |>
-    dplyr::select(var, x, dplyr::all_of(gcol_name), p) |>
-    tidyr::pivot_wider(
-      id_cols = c("var", "x"),
-      names_from = dplyr::all_of(gcol_name),
-      values_from = p,
-      values_fill = 0
-    ) |>
-    dplyr::rename(
-      p.c = as.character(!!group_levels[1]),
-      p.t = as.character(!!group_levels[2])
+    # Row names from the factor levels, as in stddiff
+    block <- matrix(
+      NA_real_,
+      nr,
+      length(out_cols),
+      dimnames = list(paste(var_names[[u]], var_levels), out_cols)
     )
+    block[, c("p.c", "p.t")] <- prop
+    block[1, c("missing.c", "missing.t")] <- na
+    block[1, c("stddiff", "stddiff.l", "stddiff.u")] <- stat
+    block
+  })
 
-  # Assemble final table
-  result <- props_wide |>
-    dplyr::left_join(stddiff_df, by = "var") |>
-    dplyr::left_join(miss_wide, by = "var") |>
-    dplyr::mutate(var = factor(var, levels = vcol_names)) |>
-    dplyr::arrange(var, x) |>
-    dplyr::mutate(var = as.character(var)) |>
-    dplyr::group_by(var) |>
-    dplyr::mutate(
-      stddiff = dplyr::if_else(dplyr::row_number() == 1, stddiff, NA_real_),
-      stddiff.l = dplyr::if_else(dplyr::row_number() == 1, stddiff.l, NA_real_),
-      stddiff.u = dplyr::if_else(dplyr::row_number() == 1, stddiff.u, NA_real_),
-      missing.c = dplyr::if_else(dplyr::row_number() == 1, missing.c, NA_real_),
-      missing.t = dplyr::if_else(dplyr::row_number() == 1, missing.t, NA_real_)
-    ) |>
-    dplyr::ungroup() |>
-    dplyr::select(
-      var,
-      x,
-      p.c,
-      p.t,
-      missing.c,
-      missing.t,
-      stddiff,
-      stddiff.l,
-      stddiff.u
-    )
-
-  # Convert vars to original types
-  for (i in seq_len(nrow(result))) {
-    var_name <- result$var[i]
-    r_type <- original_r_types[[var_name]]
-
-    result$x[i] <- switch(
-      r_type,
-      "integer" = as.integer(result$x[i]),
-      "numeric" = as.numeric(result$x[i]),
-      "logical" = as.logical(result$x[i]),
-      "character" = as.character(result$x[i]),
-      result$x[i] # fallback, just in case
-    )
-  }
-
-  # Convert to matrix with combined rownames
-  rst <- as.matrix(result[, -(1:2)])
-  rownames(rst) <- paste(result$var, result$x)
+  rst <- do.call(rbind, blocks)
   rst <- round(rst, 3)
 
   if (verbose) {
@@ -513,102 +519,155 @@ stddiff_category_spark <- function(data, gcol, vcol, verbose = FALSE) {
 
 #' @keywords internal
 stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
-  validate_stddiff_inputs(data, gcol, vcol, type = "numeric")
+  validate_stddiff_inputs(data, gcol, vcol)
 
   all_cols <- colnames(data)
   gcol_name <- all_cols[gcol]
-  vcol_names <- all_cols[vcol]
+  uvcol <- unique(vcol)
+  vars <- paste0("v", seq_along(uvcol))
+  var_names <- all_cols[uvcol]
 
   if (verbose) {
-    message("Processing ", length(vcol_names), " numeric variable(s)...")
+    message("Processing ", length(vcol), " numeric variable(s)...")
   }
 
-  # Pivot to long format
-  long <- data |>
-    dplyr::select(dplyr::all_of(c(gcol, vcol))) |>
-    dplyr::mutate(dplyr::across(dplyr::all_of(vcol_names), as.numeric)) |>
-    tidyr::pivot_longer(
-      cols = dplyr::all_of(vcol_names),
-      names_to = "var",
-      values_to = "x"
+  # stddiff codes the group column as a factor, so as a variable its values
+  # are the codes 1 and 2. A constant here has the same SD and counts; the
+  # means are set to the codes below.
+  selected <- select_internal(data, gcol_name, var_names)
+  group_var <- vars[var_names == gcol_name]
+  if (length(group_var) > 0) {
+    selected <- dplyr::mutate(
+      selected,
+      dplyr::across(dplyr::all_of(group_var), ~1)
     )
+  }
 
-  # Aggregate and collect
-  stats <- long |>
-    dplyr::group_by(var, .data[[gcol_name]]) |>
+  # Columns are converted as as.numeric() converts them: strings (and the
+  # strings select_internal() makes of calendar intervals) as in
+  # string_as_numeric(), with a flag column for the values it turns into NA
+  # with a warning, and dates and date-times into days and seconds since 1970
+  types <- spark_types(data, var_names)
+  is_var <- var_names != gcol_name
+  string_vars <- vars[
+    types %in% c("StringType", "CalendarIntervalType") & is_var
+  ]
+  # sprintf(), unlike paste0(), gives none for none
+  flags <- sprintf("coerced_%s", string_vars)
+  convert <- list()
+  for (i in seq_along(string_vars)) {
+    s <- string_as_numeric(as.name(string_vars[i]))
+    # The flag first, from the string, which the value then replaces
+    convert[[flags[i]]] <- s$coerced
+    convert[[string_vars[i]]] <- s$value
+  }
+  for (v in vars[types == "DateType" & is_var]) {
+    convert[[v]] <- bquote(unix_date(.(as.name(v))))
+  }
+  # select_internal() gives date-times as microseconds
+  for (v in vars[types == "TimestampType" & is_var]) {
+    convert[[v]] <- bquote(as.numeric(.(as.name(v))) / 1e6)
+  }
+  if (length(convert) > 0) {
+    selected <- dplyr::mutate(selected, !!!convert)
+  }
+
+  # Summaries per variable and group. The flag columns stay alongside every
+  # variable in the long format, so each variable's rows count them once.
+  flag_sums <- lapply(
+    flags,
+    function(f) bquote(sum(.(as.name(f)), na.rm = TRUE))
+  )
+  names(flag_sums) <- flags
+  stats <- selected |>
+    pivot_long(vars, numeric = TRUE) |>
+    dplyr::group_by(var, group) |>
     dplyr::summarise(
-      mean = mean(x, na.rm = TRUE),
-      sd = sd(x, na.rm = TRUE),
-      n = sum(dplyr::if_else(is.na(x), 0L, 1L), na.rm = TRUE),
-      miss = sum(dplyr::if_else(is.na(x), 1L, 0L), na.rm = TRUE),
+      mean = mean(value, na.rm = TRUE),
+      sd = sd(value, na.rm = TRUE),
+      n = sum(dplyr::if_else(is.na(value), 0L, 1L), na.rm = TRUE),
+      miss = sum(dplyr::if_else(is.na(value), 1L, 0L), na.rm = TRUE),
+      !!!flag_sums,
       .groups = "drop"
     ) |>
     dplyr::collect()
 
-  # Get group levels (sorted)
-  group_levels <- sort(unique(stats[[gcol_name]]))
-  check_binary_group(group_levels, gcol_name)
-
-  # Pivot to wide format
-  stats_wide <- stats |>
-    dplyr::arrange(var, .data[[gcol_name]]) |>
-    tidyr::pivot_wider(
-      id_cols = var,
-      names_from = dplyr::all_of(gcol_name),
-      values_from = c(mean, sd, n, miss)
-    )
-
-  tryCatch(
-    {
-      result <- stats_wide |>
-        dplyr::rename(
-          mean.c = !!paste0("mean_", group_levels[1]),
-          mean.t = !!paste0("mean_", group_levels[2]),
-          sd.c = !!paste0("sd_", group_levels[1]),
-          sd.t = !!paste0("sd_", group_levels[2]),
-          n.c = !!paste0("n_", group_levels[1]),
-          n.t = !!paste0("n_", group_levels[2]),
-          missing.c = !!paste0("miss_", group_levels[1]),
-          missing.t = !!paste0("miss_", group_levels[2])
-        ) |>
-        dplyr::mutate(
-          stddiff = abs(mean.t - mean.c) / sqrt((sd.t^2 + sd.c^2) / 2),
-          n = n.c + n.t,
-          se = sqrt(n / (n.c * n.t) + stddiff^2 / (2 * n)),
-          stddiff.l = stddiff - 1.96 * se,
-          stddiff.u = stddiff + 1.96 * se
-        ) |>
-        dplyr::select(
-          var,
-          mean.c,
-          sd.c,
-          mean.t,
-          sd.t,
-          missing.c,
-          missing.t,
-          stddiff,
-          stddiff.l,
-          stddiff.u
-        ) |>
-        dplyr::mutate(var = factor(var, levels = vcol_names)) |>
-        dplyr::arrange(var) |>
-        dplyr::mutate(var = as.character(var))
-    },
-    error = function(e) {
-      stop(
-        "Failed to process group levels '",
-        group_levels[1],
-        "' and '",
-        group_levels[2],
-        "'. Check that gcol contains exactly 2 levels.",
-        call. = FALSE
-      )
-    }
+  coerced <- rep(0, length(vars))
+  names(coerced) <- vars
+  coerced[string_vars] <- vapply(
+    flags,
+    function(f) sum(stats[[f]][stats$var == vars[1]]),
+    numeric(1)
   )
 
-  # Convert to matrix with rownames
-  rst <- as.matrix(result[, -1])
-  rownames(rst) <- result$var
+  stats$arm <- group_arms(
+    stats$group,
+    gcol_name,
+    spark_types(data, gcol_name)
+  )
+
+  # stddiff turns the group column itself into numbers when it reaches it in
+  # vcol, after which levels() finds no levels and every later variable's
+  # missing counts are 0
+  group_pos <- match(gcol, vcol)
+
+  rst <- matrix(
+    NA_real_,
+    length(vcol),
+    9,
+    dimnames = list(
+      all_cols[vcol],
+      c(
+        "mean.c",
+        "sd.c",
+        "mean.t",
+        "sd.t",
+        "missing.c",
+        "missing.t",
+        "stddiff",
+        "stddiff.l",
+        "stddiff.u"
+      )
+    )
+  )
+  for (i in seq_along(vcol)) {
+    u <- match(vcol[i], uvcol)
+
+    # stddiff converts each column with as.numeric() in place, so the
+    # coercion warning comes only on the column's first appearance in vcol
+    if (coerced[[vars[u]]] > 0 && match(vcol[i], vcol) == i) {
+      warning("NAs introduced by coercion", call. = FALSE)
+    }
+
+    st <- arm_summaries(stats[stats$var == vars[u], ])
+    n <- st$n
+    means <- if (vars[u] %in% group_var) c(1, 2) else st$mean
+    na <- if (!is.na(group_pos) && i >= group_pos) c(0, 0) else st$miss
+
+    # aggregate() in stddiff drops a group with no complete rows, so the
+    # remaining group fills the first position; with none it stops
+    present <- which(n > 0)
+    if (length(present) == 0) {
+      warn_na(var_names[[u]], simpleError("no rows to aggregate"))
+      rst[i, c("missing.c", "missing.t")] <- na
+      next
+    }
+    m <- c(means[present], NA)[1:2]
+    s <- c(st$sd[present], NA)[1:2]
+
+    stddiff <- abs(m[2] - m[1]) / sqrt((s[2]^2 + s[1]^2) / 2)
+    se <- sqrt(sum(n) / (n[1] * n[2]) + stddiff^2 / (2 * sum(n)))
+    rst[i, ] <- c(
+      m[1],
+      s[1],
+      m[2],
+      s[2],
+      na,
+      stddiff,
+      stddiff - 1.96 * se,
+      stddiff + 1.96 * se
+    )
+  }
   rst <- round(rst, 3)
 
   if (verbose) {
@@ -620,6 +679,24 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
 
 # Public Wrapper Functions ------------------------------------------------
 
+# Spark data goes to `spark_fn`; anything else to stddiff's function `name`
+dispatch <- function(name, spark_fn, data, gcol, vcol, verbose) {
+  if (inherits(data, "tbl_spark")) {
+    return(spark_fn(data, gcol, vcol, verbose = verbose))
+  }
+  if (!requireNamespace("stddiff", quietly = TRUE)) {
+    stop(
+      "Package 'stddiff' is required for data.frame. ",
+      "Install with: install.packages('stddiff')",
+      call. = FALSE
+    )
+  }
+  if (verbose) {
+    message("Using stddiff package for data.frame")
+  }
+  getExportedValue("stddiff", name)(data, gcol, vcol)
+}
+
 #' Compute Standardized Differences for Binary Variables (Spark)
 #'
 #' Calculates standardized differences for binary variables using a Spark
@@ -629,11 +706,13 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
 #' @param gcol Integer; column index of the binary grouping variable
 #'   (e.g., treatment vs control).
 #' @param vcol Integer vector; column indices of the binary variables to analyze.
+#'   Repeated indices give repeated rows, and \code{gcol} may be included like
+#'   any other column, as in \code{stddiff}.
 #' @param verbose Logical; if TRUE, prints progress messages. Default is FALSE.
 #'
 #' @return A numeric matrix with one row per variable and columns:
-#' * `p.c`: Proportion in control group (first level alphabetically)
-#' * `p.t`: Proportion in treatment group (second level alphabetically)
+#' * `p.c`: Proportion in control group (first value of the group column)
+#' * `p.t`: Proportion in treatment group (second value of the group column)
 #' * `missing.c`: Number of missing values in control group
 #' * `missing.t`: Number of missing values in treatment group
 #' * `stddiff`: Standardized difference
@@ -641,9 +720,31 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
 #' * `stddiff.u`: Upper bound of 95% confidence interval
 #'
 #' @details
-#' Variables are encoded using lexicographic ordering since Spark does not
-#' have factor types. The first level alphabetically becomes 0, the second
-#' becomes 1.
+#' Spark DataFrames have no factor type, so values are ordered the way
+#' \code{as.factor()} orders them in \code{stddiff}: numerically for numeric
+#' columns, alphabetically for strings, and \code{FALSE} before \code{TRUE}.
+#' The first value of each variable becomes 0 and the second becomes 1, so
+#' \code{p.c} and \code{p.t} are proportions of the second value. The group
+#' column is ordered the same way, and its first value is the control group.
+#'
+#' Like \code{stddiff}, this does not check that variables are binary. A
+#' variable with more than two distinct values is coded 0, 1, 2, ... in that
+#' order, so its results are not meaningful: the proportions can exceed 1, and
+#' the standardized difference can be \code{NaN}, with R's "NaNs produced"
+#' warning. Each distinct value is collected, so don't pass continuous or
+#' ID-like columns.
+#'
+#' Differences from \code{stddiff} on Spark data: the group column must have
+#' exactly two values, or the function stops with an error. \code{stddiff}
+#' doesn't check this, and with more than two groups it silently compares the
+#' first two. \code{NaN} counts as missing, where \code{stddiff} keeps it as a
+#' value, because sparklyr's \code{copy_to()} turns some R \code{NA}s into
+#' \code{NaN}. With more than about 46,000 rows per group, the confidence
+#' limits are computed where \code{stddiff}'s integer counts overflow and give
+#' \code{NA}. Spark also has no factor type, so the data cannot carry a
+#' custom level order. Groups and values follow their sorted order, which is
+#' the default order in \code{stddiff}. Local data frames are passed to
+#' \code{stddiff}, which uses the level order of factor columns.
 #'
 #' The standardized difference is computed as:
 #' \deqn{d = \frac{|p_t - p_c|}{\sqrt{(p_t(1-p_t) + p_c(1-p_c))/2}}}
@@ -664,21 +765,7 @@ stddiff_numeric_spark <- function(data, gcol, vcol, verbose = FALSE) {
 #' @seealso \code{\link{stddiff.category}}, \code{\link{stddiff.numeric}}
 #' @export
 stddiff.binary <- function(data, gcol, vcol, verbose = FALSE) {
-  if (inherits(data, "tbl_spark")) {
-    stddiff_binary_spark(data, gcol, vcol, verbose = verbose)
-  } else {
-    if (!requireNamespace("stddiff", quietly = TRUE)) {
-      stop(
-        "Package 'stddiff' is required for data.frame. 
-        Install with: install.packages('stddiff')",
-        call. = FALSE
-      )
-    }
-    if (verbose) {
-      message("Using stddiff package for data.frame")
-    }
-    stddiff::stddiff.binary(data, gcol, vcol)
-  }
+  dispatch("stddiff.binary", stddiff_binary_spark, data, gcol, vcol, verbose)
 }
 
 #' Compute Standardized Differences for Categorical Variables (Spark)
@@ -689,6 +776,8 @@ stddiff.binary <- function(data, gcol, vcol, verbose = FALSE) {
 #' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables.
 #' @param gcol Integer; column index of the binary grouping variable.
 #' @param vcol Integer vector; column indices of the categorical variables to analyze.
+#'   Repeated indices give repeated rows, and \code{gcol} may be included like
+#'   any other column, as in \code{stddiff}.
 #' @param verbose Logical; if TRUE, prints progress messages. Default is FALSE.
 #'
 #' @return A numeric matrix with one row per category level and columns:
@@ -700,13 +789,33 @@ stddiff.binary <- function(data, gcol, vcol, verbose = FALSE) {
 #' * `stddiff.l`: Lower CI bound (first row only)
 #' * `stddiff.u`: Upper CI bound (first row only)
 #'
-#' Row names are formatted as "variable_name level_name".
+#' Row names are formatted as "variable_name level_name". A variable with no
+#' non-missing values gets one row, named after the variable.
 #'
 #' @details
 #' For categorical variables with K levels, the standardized difference is
 #' computed using a multivariate approach that accounts for all K-1 levels
-#' simultaneously (excluding the reference level). Category levels are sorted
-#' lexicographically; the first level alphabetically serves as the reference.
+#' simultaneously (excluding the reference level). Levels are ordered the way
+#' \code{as.factor()} orders them in \code{stddiff} (numerically for numeric
+#' columns, alphabetically for strings), and the first level serves as the
+#' reference. The standardized difference does not depend on which level is
+#' the reference. Each distinct value is collected, so don't pass continuous
+#' or ID-like columns.
+#'
+#' Differences from \code{stddiff} on Spark data: where \code{stddiff} stops
+#' with an error for a variable, such as a singular matrix, that variable gets
+#' \code{NA} with a warning and the other variables still get results. Local
+#' data frames are passed to \code{stddiff}, so the error remains there. The
+#' group column must have exactly two values, or the function stops with an
+#' error that says so. \code{stddiff} doesn't check this, and with more than
+#' two groups it stops with an unrelated error. \code{NaN} counts as missing,
+#' where \code{stddiff} keeps it as a level, because sparklyr's
+#' \code{copy_to()} turns some R \code{NA}s into \code{NaN}. With more than
+#' about 46,000 rows per group, the confidence limits are computed where
+#' \code{stddiff}'s integer counts overflow and give \code{NA}. Spark also has
+#' no factor type, so the data cannot carry a custom level order: groups and
+#' levels follow their sorted order, which is the default order in
+#' \code{stddiff}.
 #'
 #' @examplesIf requireNamespace("sparklyr", quietly = TRUE) && interactive()
 #' sc <- sparklyr::spark_connect(master = "local")
@@ -724,21 +833,9 @@ stddiff.binary <- function(data, gcol, vcol, verbose = FALSE) {
 #' @seealso \code{\link{stddiff.binary}}, \code{\link{stddiff.numeric}}
 #' @export
 stddiff.category <- function(data, gcol, vcol, verbose = FALSE) {
-  if (inherits(data, "tbl_spark")) {
-    stddiff_category_spark(data, gcol, vcol, verbose = verbose)
-  } else {
-    if (!requireNamespace("stddiff", quietly = TRUE)) {
-      stop(
-        "Package 'stddiff' is required for data.frame. 
-        Install with: install.packages('stddiff')",
-        call. = FALSE
-      )
-    }
-    if (verbose) {
-      message("Using stddiff package for data.frame")
-    }
-    stddiff::stddiff.category(data, gcol, vcol)
-  }
+  dispatch(
+    "stddiff.category", stddiff_category_spark, data, gcol, vcol, verbose
+  )
 }
 
 #' Compute Standardized Differences for Numeric Variables (Spark)
@@ -749,6 +846,8 @@ stddiff.category <- function(data, gcol, vcol, verbose = FALSE) {
 #' @param data A Spark DataFrame (\code{tbl_spark}) containing the variables.
 #' @param gcol Integer; column index of the binary grouping variable.
 #' @param vcol Integer vector; column indices of the numeric variables to analyze.
+#'   Repeated indices give repeated rows, and \code{gcol} may be included like
+#'   any other column, as in \code{stddiff}.
 #' @param verbose Logical; if TRUE, prints progress messages. Default is FALSE.
 #'
 #' @return A numeric matrix with one row per variable and columns:
@@ -767,7 +866,20 @@ stddiff.category <- function(data, gcol, vcol, verbose = FALSE) {
 #' \deqn{d = \frac{|\bar{x}_t - \bar{x}_c|}{\sqrt{(s_t^2 + s_c^2)/2}}}
 #' where \eqn{\bar{x}} represents means and \eqn{s^2} represents variances.
 #'
-#' This is equivalent to Cohen's d with pooled standard deviation.
+#' Differences from \code{stddiff} on Spark data: where \code{stddiff} stops
+#' with an error for a variable, as when it has no non-missing values, that
+#' variable gets \code{NA} with a warning and the other variables still get
+#' results. Local data frames are passed to \code{stddiff}, so the error
+#' remains there. The group column must have exactly two values, or the
+#' function stops with an error. \code{stddiff} doesn't check this, and with
+#' more than two groups it silently compares the first two. Strings are
+#' converted as \code{as.numeric()} converts decimals, \code{Inf} and
+#' \code{NaN}, but unusual formats it also reads, such as hexadecimal
+#' (\code{"0x1A"}), become \code{NA} with its coercion warning. With more than
+#' about 46,000 rows per group, the confidence limits are computed where
+#' \code{stddiff}'s integer counts overflow and give \code{NA}. Spark also has
+#' no factor type, so the data cannot carry a custom level order: groups
+#' follow their sorted order, which is the default order in \code{stddiff}.
 #'
 #' @examplesIf requireNamespace("sparklyr", quietly = TRUE) && interactive()
 #' sc <- sparklyr::spark_connect(master = "local")
@@ -785,50 +897,22 @@ stddiff.category <- function(data, gcol, vcol, verbose = FALSE) {
 #' @seealso \code{\link{stddiff.binary}}, \code{\link{stddiff.category}}
 #' @export
 stddiff.numeric <- function(data, gcol, vcol, verbose = FALSE) {
-  if (inherits(data, "tbl_spark")) {
-    stddiff_numeric_spark(data, gcol, vcol, verbose = verbose)
-  } else {
-    if (!requireNamespace("stddiff", quietly = TRUE)) {
-      stop(
-        "Package 'stddiff' is required for data.frame. 
-        Install with: install.packages('stddiff')",
-        call. = FALSE
-      )
-    }
-    if (verbose) {
-      message("Using stddiff package for data.frame")
-    }
-    stddiff::stddiff.numeric(data, gcol, vcol)
-  }
+  dispatch("stddiff.numeric", stddiff_numeric_spark, data, gcol, vcol, verbose)
 }
 
 # Column names created/used in dplyr pipelines
 utils::globalVariables(c(
+  "group",
   "var",
-  "x",
-  "x_mapped",
-  "min_val",
-  "max_val",
-  "p",
-  "n",
-  "miss",
-  "p.c",
-  "p.t",
-  "n.c",
-  "n.t",
-  "missing.c",
-  "missing.t",
-  "mean.c",
-  "mean.t",
-  "sd.c",
-  "sd.t",
-  "stddiff",
-  "stddiff.l",
-  "stddiff.u",
-  "se",
-  ".data",
+  "value",
   "sd"
 ))
 
-# Spark SQL functions
-utils::globalVariables("isnan")
+# Spark SQL functions, and bquote()'s .() in the expressions that use them
+utils::globalVariables(c(
+  "isnan",
+  "rlike",
+  "unix_date",
+  "unix_micros",
+  "."
+))

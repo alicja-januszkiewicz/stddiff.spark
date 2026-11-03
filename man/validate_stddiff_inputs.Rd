@@ -4,7 +4,7 @@
 \alias{validate_stddiff_inputs}
 \title{Validate inputs for stddiff functions}
 \usage{
-validate_stddiff_inputs(data, gcol, vcol, type)
+validate_stddiff_inputs(data, gcol, vcol)
 }
 \description{
 Validate inputs for stddiff functions

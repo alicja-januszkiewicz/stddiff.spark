@@ -11,7 +11,9 @@ stddiff.category(data, gcol, vcol, verbose = FALSE)
 
 \item{gcol}{Integer; column index of the binary grouping variable.}
 
-\item{vcol}{Integer vector; column indices of the categorical variables to analyze.}
+\item{vcol}{Integer vector; column indices of the categorical variables to analyze.
+Repeated indices give repeated rows, and \code{gcol} may be included like
+any other column, as in \code{stddiff}.}
 
 \item{verbose}{Logical; if TRUE, prints progress messages. Default is FALSE.}
 }
@@ -27,7 +29,8 @@ A numeric matrix with one row per category level and columns:
 \item \code{stddiff.u}: Upper CI bound (first row only)
 }
 
-Row names are formatted as "variable_name level_name".
+Row names are formatted as "variable_name level_name". A variable with no
+non-missing values gets one row, named after the variable.
 }
 \description{
 Calculates standardized differences for categorical variables using a Spark
@@ -36,8 +39,27 @@ DataFrame. Equivalent to \code{stddiff::stddiff.category} but operates on Spark 
 \details{
 For categorical variables with K levels, the standardized difference is
 computed using a multivariate approach that accounts for all K-1 levels
-simultaneously (excluding the reference level). Category levels are sorted
-lexicographically; the first level alphabetically serves as the reference.
+simultaneously (excluding the reference level). Levels are ordered the way
+\code{as.factor()} orders them in \code{stddiff} (numerically for numeric
+columns, alphabetically for strings), and the first level serves as the
+reference. The standardized difference does not depend on which level is
+the reference. Each distinct value is collected, so don't pass continuous
+or ID-like columns.
+
+Differences from \code{stddiff} on Spark data: where \code{stddiff} stops
+with an error for a variable, such as a singular matrix, that variable gets
+\code{NA} with a warning and the other variables still get results. Local
+data frames are passed to \code{stddiff}, so the error remains there. The
+group column must have exactly two values, or the function stops with an
+error that says so. \code{stddiff} doesn't check this, and with more than
+two groups it stops with an unrelated error. \code{NaN} counts as missing,
+where \code{stddiff} keeps it as a level, because sparklyr's
+\code{copy_to()} turns some R \code{NA}s into \code{NaN}. With more than
+about 46,000 rows per group, the confidence limits are computed where
+\code{stddiff}'s integer counts overflow and give \code{NA}. Spark also has
+no factor type, so the data cannot carry a custom level order: groups and
+levels follow their sorted order, which is the default order in
+\code{stddiff}.
 }
 \examples{
 \dontshow{if (requireNamespace("sparklyr", quietly = TRUE) && interactive()) withAutoprint(\{ # examplesIf}

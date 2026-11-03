@@ -11,7 +11,9 @@ stddiff.numeric(data, gcol, vcol, verbose = FALSE)
 
 \item{gcol}{Integer; column index of the binary grouping variable.}
 
-\item{vcol}{Integer vector; column indices of the numeric variables to analyze.}
+\item{vcol}{Integer vector; column indices of the numeric variables to analyze.
+Repeated indices give repeated rows, and \code{gcol} may be included like
+any other column, as in \code{stddiff}.}
 
 \item{verbose}{Logical; if TRUE, prints progress messages. Default is FALSE.}
 }
@@ -38,7 +40,20 @@ The standardized difference for continuous variables is computed as:
 \deqn{d = \frac{|\bar{x}_t - \bar{x}_c|}{\sqrt{(s_t^2 + s_c^2)/2}}}
 where \eqn{\bar{x}} represents means and \eqn{s^2} represents variances.
 
-This is equivalent to Cohen's d with pooled standard deviation.
+Differences from \code{stddiff} on Spark data: where \code{stddiff} stops
+with an error for a variable, as when it has no non-missing values, that
+variable gets \code{NA} with a warning and the other variables still get
+results. Local data frames are passed to \code{stddiff}, so the error
+remains there. The group column must have exactly two values, or the
+function stops with an error. \code{stddiff} doesn't check this, and with
+more than two groups it silently compares the first two. Strings are
+converted as \code{as.numeric()} converts decimals, \code{Inf} and
+\code{NaN}, but unusual formats it also reads, such as hexadecimal
+(\code{"0x1A"}), become \code{NA} with its coercion warning. With more than
+about 46,000 rows per group, the confidence limits are computed where
+\code{stddiff}'s integer counts overflow and give \code{NA}. Spark also has
+no factor type, so the data cannot carry a custom level order: groups
+follow their sorted order, which is the default order in \code{stddiff}.
 }
 \examples{
 \dontshow{if (requireNamespace("sparklyr", quietly = TRUE) && interactive()) withAutoprint(\{ # examplesIf}
