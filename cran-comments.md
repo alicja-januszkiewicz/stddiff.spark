@@ -4,8 +4,8 @@ This is a minor release (1.0 -> 1.1.0). It fixes several cases where results
 on Spark data differed from `stddiff`'s, including value ordering, `NaN`
 handling and clashes with internal column names, and accepts the column types
 `stddiff` accepts, such as dates and date-times. It also raises the sparklyr
-requirement to 1.8.4, the oldest release that works with current dbplyr. See
-NEWS.md.
+requirement to 1.8.4, the oldest release that works with a compatible dbplyr 
+(below 2.6.0). See NEWS.md.
 
 ## Test environments
 
